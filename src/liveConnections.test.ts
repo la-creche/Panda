@@ -475,6 +475,70 @@ describe('local activity stamping (#175)', () => {
     // The replayed transcript itself did land.
     expect(slot.docs['s-a2']!.turns).toHaveLength(1);
   });
+
+  it('buffers a session/load replay and publishes its document once', async () => {
+    const stubs = installStubClients();
+    await connectedStub('agent-a', stubs, 's-a');
+    stubs[0]!.handlers.onSessions([
+      { sessionId: 's-a2', cwd: '/agent-a', title: null, updatedAt: '2026-01-01T00:00:00Z' },
+    ]);
+
+    stubs[0]!.handlers.onSessionSwitchStage('s-a2', '/agent-a', 1);
+    stubs[0]!.handlers.onReplayStart();
+    let documentWrites = 0;
+    const unsubscribe = usePanda.subscribe((state, previous) => {
+      if (state.connections['agent-a']?.docs['s-a2'] !== previous.connections['agent-a']?.docs['s-a2']) {
+        documentWrites += 1;
+      }
+    });
+
+    for (let index = 0; index < 1000; index += 1) {
+      stubs[0]!.handlers.onUpdate({
+        sessionUpdate: 'agent_message_chunk',
+        messageId: 'm',
+        content: { type: 'text', text: 'x' },
+      });
+    }
+    stubs[0]!.handlers.onSessionModes({
+      currentModeId: 'ask',
+      availableModes: [{ id: 'ask', name: 'Ask' }],
+    });
+
+    expect(usePanda.getState().connections['agent-a']!.docs['s-a2']!.turns).toHaveLength(0);
+    expect(documentWrites).toBe(0);
+
+    stubs[0]!.handlers.onSessionSwitchCommit(1);
+    unsubscribe();
+
+    const doc = usePanda.getState().connections['agent-a']!.docs['s-a2']!;
+    expect(documentWrites).toBe(1);
+    expect(doc.turns).toHaveLength(1);
+    expect(doc.modes?.currentModeId).toBe('ask');
+    expect(doc.turns[0]!.blocks[0]).toMatchObject({
+      kind: 'agent_message',
+      parts: [{ type: 'text', text: 'x'.repeat(1000) }],
+    });
+  });
+
+  it('discards buffered replay updates on rollback', async () => {
+    const stubs = installStubClients();
+    await connectedStub('agent-a', stubs, 's-a');
+    stubs[0]!.handlers.onSessions([
+      { sessionId: 's-a2', cwd: '/agent-a', title: null, updatedAt: null },
+    ]);
+
+    stubs[0]!.handlers.onSessionSwitchStage('s-a2', '/agent-a', 1);
+    stubs[0]!.handlers.onReplayStart();
+    stubs[0]!.handlers.onUpdate({
+      sessionUpdate: 'user_message',
+      content: [{ type: 'text', text: 'partial history' }],
+    });
+    stubs[0]!.handlers.onSessionSwitchRollback('load failed', 1);
+
+    const state = usePanda.getState();
+    expect(state.activeSessionId).toBe('s-a');
+    expect(state.connections['agent-a']!.docs['s-a2']).toBeUndefined();
+  });
 });
 
 describe('offline agent seeding (phase 3)', () => {

@@ -193,7 +193,14 @@ type LiveConnection = {
    * Snapshot of the in-flight session switch (issue #17) — captured at stage,
    * consumed by exactly one commit or rollback, era-guarded (issue #19).
    */
-  stagedSwitch: { snapshot: SessionSwitchSnapshot; era: number; sessionId: string; cwd: string } | null;
+  stagedSwitch: {
+    snapshot: SessionSwitchSnapshot;
+    era: number;
+    sessionId: string;
+    cwd: string;
+    /** Null before replay starts; then the updates staged for one publication. */
+    replayUpdates: AcpSessionUpdate[] | null;
+  } | null;
   /** Profile targeted by the in-flight connect — consumed on success (write-back). */
   pendingProfile: { id: string; target: LiveTarget; workspace: Workspace } | null;
   /**
@@ -297,8 +304,16 @@ function ensureEntry(connectionId: string): LiveConnection {
 
 function wireHandlers(entry: LiveConnection) {
   const { connectionId, port } = entry;
+  const writeUpdate = (update: AcpSessionUpdate): void => {
+    const replay = entry.stagedSwitch?.replayUpdates;
+    if (replay !== null && replay !== undefined) {
+      replay.push(update);
+      return;
+    }
+    port.update(update);
+  };
   return {
-    onUpdate: (update: AcpSessionUpdate) => port.update(update),
+    onUpdate: writeUpdate,
     onConnected: (info: { agentName: string; protocolVersion: number }) => {
       port.setConnection({
         status: 'connected',
@@ -325,9 +340,9 @@ function wireHandlers(entry: LiveConnection) {
     },
     onSessionId: (sessionId: string, cwd: string) => port.adoptSession(sessionId, cwd),
     onSessionModes: (modes: AcpSessionModeState | null) =>
-      port.update({ sessionUpdate: 'modes_initialized', modes }),
+      writeUpdate({ sessionUpdate: 'modes_initialized', modes }),
     onSessionConfigOptions: (options: AcpConfigOption[] | null) =>
-      port.update({ sessionUpdate: 'config_options_initialized', options }),
+      writeUpdate({ sessionUpdate: 'config_options_initialized', options }),
     // An unexpected disconnect keeps the session id so the group can offer
     // "reconnect and resume"; a clean user disconnect clears it. Either way
     // a failed connect must not write its edits back into the profile.
@@ -381,11 +396,20 @@ function wireHandlers(entry: LiveConnection) {
     onSessions: (entries: SessionEntry[]) => port.mergeSessions(entries),
     onSessionInfo: (sessionId: string, info: { title?: string | null; updatedAt?: string | null }) =>
       port.patchSession(sessionId, info),
-    onReplayStart: () => port.resetDocument(),
+    onReplayStart: () => {
+      if (entry.stagedSwitch) entry.stagedSwitch.replayUpdates = [];
+      port.resetDocument();
+    },
     onSessionDeleted: (sessionId: string) => port.removeSession(sessionId),
     onSessionSwitchStage: (sessionId: string, cwd: string, era: number) => {
       // sessionId/cwd ride along for the rollback toast's Retry (#217).
-      entry.stagedSwitch = { snapshot: port.stageSession(sessionId, cwd), era, sessionId, cwd };
+      entry.stagedSwitch = {
+        snapshot: port.stageSession(sessionId, cwd),
+        era,
+        sessionId,
+        cwd,
+        replayUpdates: null,
+      };
     },
     onSessionSwitchCommit: (era: number) => {
       const staged = entry.stagedSwitch;
@@ -396,10 +420,11 @@ function wireHandlers(entry: LiveConnection) {
         console.info(`[panda/acp:${connectionId}] session switch commit from era ${era} ignored (staged: ${staged ? `era ${staged.era}` : 'none'})`);
         return;
       }
-      entry.stagedSwitch = null;
+      if (staged.replayUpdates !== null) port.applyReplay(staged.replayUpdates);
       // The snapshot carries the selection token (issue #19): a commit for
       // a superseded switch moves no settled pointer.
       port.commitStagedSession(staged.snapshot);
+      entry.stagedSwitch = null;
     },
     onSessionSwitchRollback: (reason: string, era: number) => {
       const staged = entry.stagedSwitch;
