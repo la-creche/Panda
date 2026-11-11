@@ -435,7 +435,15 @@ function wireHandlers(entry: LiveConnection) {
         console.info(`[panda/acp:${connectionId}] session switch commit from era ${era} ignored (staged: ${staged ? `era ${staged.era}` : 'none'})`);
         return;
       }
-      if (staged.replayUpdates !== null) port.applyReplay(staged.replayUpdates);
+      if (staged.replayUpdates !== null) {
+        const applyStartedAt = Date.now();
+        port.applyReplay(staged.replayUpdates);
+        console.info(`[panda/acp:${connectionId}] session/load replay applied`, {
+          sessionId: staged.sessionId,
+          updateCount: staged.replayUpdates.length,
+          applyMs: Math.max(0, Date.now() - applyStartedAt),
+        });
+      }
       // The snapshot carries the selection token (issue #19): a commit for
       // a superseded switch moves no settled pointer.
       port.commitStagedSession(staged.snapshot);

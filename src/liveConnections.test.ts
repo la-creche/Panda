@@ -518,6 +518,14 @@ describe('local activity stamping (#175)', () => {
       kind: 'agent_message',
       parts: [{ type: 'text', text: 'x'.repeat(1000) }],
     });
+    expect(console.info).toHaveBeenCalledWith(
+      '[panda/acp:agent-a] session/load replay applied',
+      {
+        sessionId: 's-a2',
+        updateCount: 1001,
+        applyMs: expect.any(Number),
+      },
+    );
   });
 
   it('discards buffered replay updates on rollback', async () => {
