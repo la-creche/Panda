@@ -168,6 +168,21 @@ export function persistSessionsSnapshot(
   }
 }
 
+/** Writes one endpoint's known-good session set without folding stale disk
+ * entries back in. Used only after session/list returned a complete snapshot. */
+function replacePersistedSessions(
+  url: string,
+  entries: SessionEntry[],
+  storage: SessionStorage = globalThis.localStorage,
+): void {
+  const ordered = [...entries].sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
+  try {
+    storage.setItem(SESSIONS_KEY_PREFIX + url, JSON.stringify(ordered.slice(0, PERSIST_LIMIT)));
+  } catch (err) {
+    console.warn(`[panda] could not persist sessions for ${url}`, err);
+  }
+}
+
 /** Drops one session from an endpoint's persisted memory (session/delete). */
 function purgePersistedSession(url: string, sessionId: string, storage: SessionStorage = globalThis.localStorage): void {
   const kept = loadPersistedSessions(url, storage).filter((entry) => entry.sessionId !== sessionId);
@@ -393,7 +408,7 @@ function wireHandlers(entry: LiveConnection) {
         resume: caps.resume,
         delete: caps.delete,
       }),
-    onSessions: (entries: SessionEntry[]) => port.mergeSessions(entries),
+    onSessions: (entries: SessionEntry[]) => reconcileListedSessions(entry, entries),
     onSessionInfo: (sessionId: string, info: { title?: string | null; updatedAt?: string | null }) =>
       port.patchSession(sessionId, info),
     onReplayStart: () => {
@@ -420,7 +435,15 @@ function wireHandlers(entry: LiveConnection) {
         console.info(`[panda/acp:${connectionId}] session switch commit from era ${era} ignored (staged: ${staged ? `era ${staged.era}` : 'none'})`);
         return;
       }
-      if (staged.replayUpdates !== null) port.applyReplay(staged.replayUpdates);
+      if (staged.replayUpdates !== null) {
+        const applyStartedAt = Date.now();
+        port.applyReplay(staged.replayUpdates);
+        console.info(`[panda/acp:${connectionId}] session/load replay applied`, {
+          sessionId: staged.sessionId,
+          updateCount: staged.replayUpdates.length,
+          applyMs: Math.max(0, Date.now() - applyStartedAt),
+        });
+      }
       // The snapshot carries the selection token (issue #19): a commit for
       // a superseded switch moves no settled pointer.
       port.commitStagedSession(staged.snapshot);
@@ -456,6 +479,68 @@ function wireHandlers(entry: LiveConnection) {
       }
     },
   };
+}
+
+/**
+ * Applies a complete session/list result as the endpoint's authoritative id
+ * set. Remembered metadata remains a fallback for ids the agent still lists;
+ * ids absent from the response are removed from every slot sharing the
+ * endpoint and from localStorage. A session actively connected in another
+ * slot is the one concurrency exception: it may have been created after the
+ * list request's snapshot and must not disappear from under that connection.
+ */
+function reconcileListedSessions(source: LiveConnection, listed: SessionEntry[]): void {
+  const state = usePanda.getState();
+  const sourceSlot = state.connections[source.connectionId];
+  const endpoint = sourceSlot?.connection.url ?? null;
+  const authoritativeById = new Map<string, SessionEntry>();
+  for (const session of listed) {
+    const known = authoritativeById.get(session.sessionId);
+    authoritativeById.set(session.sessionId, {
+      ...session,
+      title: session.title ?? known?.title ?? null,
+      updatedAt: session.updatedAt ?? known?.updatedAt ?? null,
+    });
+  }
+  const authoritative = [...authoritativeById.values()];
+
+  const withRememberedMetadata = (slotSessions: SessionEntry[]): SessionEntry[] => {
+    const remembered = new Map(slotSessions.map((session) => [session.sessionId, session]));
+    return authoritative.map((session) => {
+      const known = remembered.get(session.sessionId);
+      return {
+        ...session,
+        title: session.title ?? known?.title ?? null,
+        updatedAt: session.updatedAt ?? known?.updatedAt ?? null,
+      };
+    });
+  };
+
+  if (!endpoint) {
+    source.port.replaceSessions(withRememberedMetadata(sourceSlot?.sessions ?? []));
+    return;
+  }
+
+  const persisted = new Map<string, SessionEntry>();
+  for (const [connectionId, slot] of Object.entries(state.connections)) {
+    if (slot.connection.url !== endpoint) continue;
+    const next = withRememberedMetadata(slot.sessions);
+    const activeId = slot.connection.status === 'connected' ? slot.connection.sessionId : null;
+    if (activeId !== null && !next.some((session) => session.sessionId === activeId)) {
+      const active = slot.sessions.find((session) => session.sessionId === activeId);
+      if (active) next.push(active);
+    }
+    (liveConnections.get(connectionId)?.port ?? connectionStorePort(connectionId)).replaceSessions(next);
+    for (const session of next) {
+      const known = persisted.get(session.sessionId);
+      persisted.set(session.sessionId, {
+        ...session,
+        title: session.title ?? known?.title ?? null,
+        updatedAt: session.updatedAt ?? known?.updatedAt ?? null,
+      });
+    }
+  }
+  replacePersistedSessions(endpoint, [...persisted.values()]);
 }
 
 /**
@@ -550,8 +635,9 @@ export async function connectLiveConnection(
     availableAuthMethods: [],
     authedMethodId: null,
   });
-  // Seed the sidebar with sessions remembered for this endpoint; the server
-  // list (if any) merges on top. A replacing connect replaces the old
+  // Seed the sidebar with sessions remembered for this endpoint. A completed
+  // server list reconciles this cache authoritatively; until then the offline
+  // memory keeps the sidebar useful. A replacing connect replaces the old
   // endpoint's visible list rather than combining unrelated histories.
   restoreEndpointSessions(endpoint, entry.port.replaceSessions);
   // A fresh direct dial retires this endpoint's earlier pure-failure temp

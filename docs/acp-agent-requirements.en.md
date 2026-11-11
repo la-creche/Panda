@@ -170,7 +170,7 @@ None of these are entry requirements, but each omission has a clear user-visible
 
 **Session persistence (at least one of the two; both is best).** `resume` and `load` differ in emphasis: resume is the reconnect-preferred path (no replay, instant); load is history switching and the reconnect fallback (rebuilds the document by replay). Resume only: fast reconnects but no browsing history. Load only: browsing works but every reconnect replays everything. Semantic boundary: `close` releases this connection's runtime state and *keeps* persisted history (a later `load` still works); `delete` erases — a later `load` must say Session not found.
 
-**Session list.** The sidebar's session list comes entirely from `session/list` results (endpoint memory included). The client loops `nextCursor` until exhausted — pagination is not optional, implement it correctly.
+**Session list.** The sidebar's session list comes entirely from `session/list` results (endpoint memory included). The client loops `nextCursor` until exhausted — pagination is not optional, implement it correctly. The completed paginated result is authoritative for the endpoint: remembered ids absent from it are removed, including when the result is empty. A session already active on another live connection is retained as a concurrency guard.
 
 **In-turn visibility.** With message blocks alone, execution is a black box: the thought stream drives the "thinking" animation, tool cards are the main progress anchor, and every card must reach a terminal state (§4.2).
 
@@ -198,7 +198,8 @@ None of these are entry requirements, but each omission has a clear user-visible
 
 | Item | Budget | On expiry |
 | --- | --- | --- |
-| Control-plane RPCs: `initialize`, `session/new`, `session/load`, `session/list`, `session/resume`, `session/delete`, `session/set_mode`, `session/set_config_option`, `logout` | **30 s** (`CONTROL_REQUEST_TIMEOUT_MS`) | agent judged hung; the whole connection is torn down |
+| Control-plane RPCs: `initialize`, `session/new`, `session/list`, `session/resume`, `session/delete`, `session/set_mode`, `session/set_config_option`, `logout` | **30 s** (`CONTROL_REQUEST_TIMEOUT_MS`) | agent judged hung; the whole connection is torn down |
+| `session/load` | **30 s without a correctly routed replay update**, **120 s total** (`SESSION_LOAD_HARD_TIMEOUT_MS`) | agent judged hung; the whole connection is torn down |
 | `session/prompt` | unbounded | a turn runs as long as it runs; the user bounds it with cancel |
 | `authenticate` | unbounded | OAuth waits on the user out-of-band |
 | `session/close` | 1.5 s (client-side race) | the client drops the wire |
@@ -206,7 +207,7 @@ None of these are entry requirements, but each omission has a clear user-visible
 Timing advice:
 
 - **Send lifecycle companion notifications after the corresponding RPC response** (e.g. `available_commands_update` after `session/new`): before the response the client hasn't adopted that `sessionId` yet — it passes through, but don't rely on the ordering; the reference implementation pins the practice with an after-response helper.
-- **Stream `session/load` history replay before the load response**: the client routes to the target session before sending the request (a stage→commit transaction), so pre-response replay lands on the staged document and the response commits it.
+- **Stream `session/load` history replay before the load response**: the client routes to the target session before sending the request (a stage→commit transaction), so pre-response replay lands on the staged document, each correctly routed update resets the 30-second idle deadline, and the response commits it. Replay must still finish within the 120-second hard ceiling.
 - Notifications must carry the same `sessionId` throughout the session (after a reconnect-resume too).
 
 ## 7. Non-goals: methods neither side exercises

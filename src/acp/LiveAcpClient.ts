@@ -183,13 +183,33 @@ type PendingElicitation = {
 const CLIENT_INFO = { name: 'panda', title: 'Panda', version: '0.1.0' } as const;
 
 /**
- * Control-plane requests (initialize, session lifecycle, config writes) must
- * answer within this budget. `session/prompt` and `authenticate` are exempt
- * by design — a turn runs as long as it runs (the cancel button bounds it)
- * and an OAuth login waits on the user out-of-band while its url elicitation
- * hangs. `session/close` carries its own 1500ms disconnect race.
+ * Most control-plane requests (initialize, session lifecycle, config writes)
+ * must answer within this budget. A progressing session/load uses this as an
+ * idle budget plus the hard ceiling below. `session/prompt` and `authenticate`
+ * are exempt by design — a turn runs as long as it runs (the cancel button
+ * bounds it) and OAuth waits on the user. `session/close` has its own 1500ms
+ * disconnect race.
  */
 export const CONTROL_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * A progressing history replay may legitimately run longer than one control
+ * request budget, but it must still finish eventually. Correctly routed
+ * session/update notifications reset the 30s idle timer; this ceiling does
+ * not move.
+ */
+export const SESSION_LOAD_HARD_TIMEOUT_MS = 120_000;
+const SESSION_LOAD_PROGRESS_LOG_INTERVAL_MS = 5_000;
+
+type SessionLoadDiagnostics = {
+  sessionId: string;
+  startedAt: number;
+  firstUpdateAt: number | null;
+  lastUpdateAt: number | null;
+  lastProgressLogAt: number;
+  updateCount: number;
+  updateKinds: Record<string, number>;
+};
 
 /**
  * The agent never answered a control-plane request. Distinct from a JSON-RPC
@@ -363,6 +383,10 @@ export class LiveAcpClient {
   private permissionMemory: { sessionId: string; entries: Map<string, PermissionOptionKind> } | null = null;
   /** A transactional session/load switch is in flight (issue #17). */
   private sessionSwitch = false;
+  /** Resets the active session/load idle deadline when routed replay arrives. */
+  private loadProgress: (() => void) | null = null;
+  /** Content-free telemetry for the active replay; identity guards superseding loads. */
+  private loadDiagnostics: SessionLoadDiagnostics | null = null;
   /**
    * Connection era counter (issue #19): bumped by every cleanup — i.e. every
    * connect (which replaces any prior connection) and every disconnect.
@@ -1150,6 +1174,97 @@ export class LiveAcpClient {
   }
 
   /**
+   * Bounds session/load by inactivity as well as total wall time. Replays are
+   * streamed before the response, so treating every load as a fixed 30s RPC
+   * disconnects healthy agents while they are still sending history.
+   */
+  private async loadRequest<T>(sessionId: string, request: () => Promise<T>): Promise<T> {
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    let hardTimer: ReturnType<typeof setTimeout> | undefined;
+    let outcome: 'completed' | 'timeout' | 'failed' = 'completed';
+    let failure: unknown;
+    const startedAt = Date.now();
+    const diagnostics: SessionLoadDiagnostics = {
+      sessionId,
+      startedAt,
+      firstUpdateAt: null,
+      lastUpdateAt: null,
+      lastProgressLogAt: startedAt,
+      updateCount: 0,
+      updateKinds: {},
+    };
+    this.loadDiagnostics = diagnostics;
+    console.info('[panda/acp] session/load replay started', {
+      sessionId,
+      idleTimeoutMs: CONTROL_REQUEST_TIMEOUT_MS,
+      hardTimeoutMs: SESSION_LOAD_HARD_TIMEOUT_MS,
+    });
+    let rejectTimeout: (error: ControlRequestTimeoutError) => void = () => {};
+    const timeout = new Promise<never>((_, reject) => {
+      rejectTimeout = reject;
+    });
+    const resetIdle = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(
+        () => rejectTimeout(new ControlRequestTimeoutError('session/load', CONTROL_REQUEST_TIMEOUT_MS)),
+        CONTROL_REQUEST_TIMEOUT_MS,
+      );
+    };
+
+    this.loadProgress = resetIdle;
+    resetIdle();
+    hardTimer = setTimeout(
+      () => rejectTimeout(new ControlRequestTimeoutError('session/load', SESSION_LOAD_HARD_TIMEOUT_MS)),
+      SESSION_LOAD_HARD_TIMEOUT_MS,
+    );
+
+    try {
+      return await Promise.race([request(), timeout]);
+    } catch (err) {
+      outcome = err instanceof ControlRequestTimeoutError ? 'timeout' : 'failed';
+      failure = err;
+      if (err instanceof ControlRequestTimeoutError) this.reportDisconnect(`agent ${err.message}`);
+      throw err;
+    } finally {
+      console.info('[panda/acp] session/load replay finished', {
+        ...this.loadDiagnosticSummary(diagnostics, Date.now()),
+        outcome,
+        ...(failure === undefined ? {} : { error: describeError(failure) }),
+      });
+      clearTimeout(idleTimer);
+      clearTimeout(hardTimer);
+      // A superseding connection/load may already own the progress callback.
+      if (this.loadProgress === resetIdle) this.loadProgress = null;
+      if (this.loadDiagnostics === diagnostics) this.loadDiagnostics = null;
+    }
+  }
+
+  private loadDiagnosticSummary(diagnostics: SessionLoadDiagnostics, now: number) {
+    return {
+      sessionId: diagnostics.sessionId,
+      elapsedMs: Math.max(0, now - diagnostics.startedAt),
+      firstUpdateMs:
+        diagnostics.firstUpdateAt === null ? null : Math.max(0, diagnostics.firstUpdateAt - diagnostics.startedAt),
+      idleMs: Math.max(0, now - (diagnostics.lastUpdateAt ?? diagnostics.startedAt)),
+      updateCount: diagnostics.updateCount,
+      updateKinds: Object.fromEntries(Object.entries(diagnostics.updateKinds).sort(([a], [b]) => a.localeCompare(b))),
+    };
+  }
+
+  private recordLoadProgress(kind: string): void {
+    const diagnostics = this.loadDiagnostics;
+    if (!diagnostics) return;
+    const now = Date.now();
+    diagnostics.firstUpdateAt ??= now;
+    diagnostics.lastUpdateAt = now;
+    diagnostics.updateCount += 1;
+    diagnostics.updateKinds[kind] = (diagnostics.updateKinds[kind] ?? 0) + 1;
+    if (now - diagnostics.lastProgressLogAt < SESSION_LOAD_PROGRESS_LOG_INTERVAL_MS) return;
+    diagnostics.lastProgressLogAt = now;
+    console.info('[panda/acp] session/load replay progress', this.loadDiagnosticSummary(diagnostics, now));
+  }
+
+  /**
    * One capability's effective verdict (issue #22): every capability
    * decision in this client — protocol method choice included — goes
    * through the single decision point, never the raw declaration.
@@ -1218,8 +1333,7 @@ export class LiveAcpClient {
       this.sessionId = sessionId;
       this.handlers.onSessionSwitchStage(sessionId, cwd, generation);
       this.handlers.onReplayStart();
-      const loaded = await this.controlRequest(
-        'session/load',
+      const loaded = await this.loadRequest(sessionId, () =>
         connection.agent.request(methods.agent.session.load, {
           sessionId,
           cwd,
@@ -1330,6 +1444,10 @@ export class LiveAcpClient {
       );
       return;
     }
+    // Only an update that passed session routing proves the active replay is
+    // alive; foreign-session noise must not keep a stuck load open.
+    this.recordLoadProgress(params.update.sessionUpdate);
+    this.loadProgress?.();
     if (params.update.sessionUpdate === 'session_info_update') {
       // Sidebar bookkeeping; the notification is ALSO recorded at session
       // level via the session_state event below (raw preservation).
@@ -1716,5 +1834,6 @@ export class LiveAcpClient {
     this.transport = null;
     this.sessionId = null;
     this.sessionSwitch = false;
+    this.loadProgress = null;
   }
 }

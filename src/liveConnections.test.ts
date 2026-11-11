@@ -518,6 +518,14 @@ describe('local activity stamping (#175)', () => {
       kind: 'agent_message',
       parts: [{ type: 'text', text: 'x'.repeat(1000) }],
     });
+    expect(console.info).toHaveBeenCalledWith(
+      '[panda/acp:agent-a] session/load replay applied',
+      {
+        sessionId: 's-a2',
+        updateCount: 1001,
+        applyMs: expect.any(Number),
+      },
+    );
   });
 
   it('discards buffered replay updates on rollback', async () => {
@@ -538,6 +546,84 @@ describe('local activity stamping (#175)', () => {
     const state = usePanda.getState();
     expect(state.activeSessionId).toBe('s-a');
     expect(state.connections['agent-a']!.docs['s-a2']).toBeUndefined();
+  });
+});
+
+describe('authoritative session/list reconciliation', () => {
+  const remembered: SessionEntry[] = [
+    { sessionId: 'kept', cwd: '/shared', title: 'Remembered title', updatedAt: '2026-01-01T00:00:00Z' },
+    { sessionId: 'ghost', cwd: '/shared', title: 'Deleted elsewhere', updatedAt: null },
+  ];
+
+  function installRememberedSessions(): MemoryStorage {
+    const storage = new MemoryStorage();
+    storage.setItem('panda.sessions:ws://shared/acp', JSON.stringify(remembered));
+    vi.stubGlobal('localStorage', storage);
+    return storage;
+  }
+
+  it('removes remembered ghosts while retaining richer metadata for listed ids', async () => {
+    const storage = installRememberedSessions();
+    const stubs = installStubClients();
+    await connectLiveConnection(
+      'agent-a',
+      { kind: 'websocket', url: 'ws://shared/acp' },
+      { kind: 'local-directory', path: '/shared' },
+    );
+
+    stubs[0]!.handlers.onSessions([
+      { sessionId: 'kept', cwd: '/shared', title: null, updatedAt: null },
+      { sessionId: 'server-only', cwd: '/shared', title: 'From agent', updatedAt: null },
+    ]);
+
+    const visible = usePanda.getState().connections['agent-a']!.sessions;
+    expect(visible.map((entry) => entry.sessionId)).toEqual(['kept', 'server-only']);
+    expect(visible[0]).toMatchObject({ title: 'Remembered title', updatedAt: '2026-01-01T00:00:00Z' });
+    const persisted = JSON.parse(storage.getItem('panda.sessions:ws://shared/acp')!) as SessionEntry[];
+    expect(persisted.map((entry) => entry.sessionId)).toEqual(['kept', 'server-only']);
+  });
+
+  it('clears remembered sessions when the authoritative list is empty', async () => {
+    const storage = installRememberedSessions();
+    const stubs = installStubClients();
+    await connectLiveConnection(
+      'agent-a',
+      { kind: 'websocket', url: 'ws://shared/acp' },
+      { kind: 'local-directory', path: '/shared' },
+    );
+
+    stubs[0]!.handlers.onSessions([]);
+
+    expect(usePanda.getState().connections['agent-a']!.sessions).toEqual([]);
+    expect(JSON.parse(storage.getItem('panda.sessions:ws://shared/acp')!)).toEqual([]);
+  });
+
+  it('reconciles every slot for the endpoint but preserves a concurrently active session', async () => {
+    const storage = installRememberedSessions();
+    const stubs = installStubClients();
+    for (const connectionId of ['agent-a', 'agent-b']) {
+      await connectLiveConnection(
+        connectionId,
+        { kind: 'websocket', url: 'ws://shared/acp' },
+        { kind: 'local-directory', path: '/shared' },
+      );
+    }
+    stubs[1]!.handlers.onSessionId('concurrent-live', '/shared');
+    stubs[1]!.handlers.onConnected({ agentName: 'agent-b', protocolVersion: 1 });
+
+    stubs[0]!.handlers.onSessions([
+      { sessionId: 'server-only', cwd: '/shared', title: 'From agent', updatedAt: null },
+    ]);
+
+    expect(usePanda.getState().connections['agent-a']!.sessions.map((entry) => entry.sessionId)).toEqual([
+      'server-only',
+    ]);
+    expect(usePanda.getState().connections['agent-b']!.sessions.map((entry) => entry.sessionId)).toEqual([
+      'server-only',
+      'concurrent-live',
+    ]);
+    const persisted = JSON.parse(storage.getItem('panda.sessions:ws://shared/acp')!) as SessionEntry[];
+    expect(persisted.map((entry) => entry.sessionId).sort()).toEqual(['concurrent-live', 'server-only']);
   });
 });
 

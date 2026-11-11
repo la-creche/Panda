@@ -170,7 +170,7 @@ Panda 注册的 client 侧 handler 全集:
 
 **会话持久化(至少二选一,最佳两个都给)。** `resume` 与 `load` 侧重不同:resume 是重连优先路径(不回放、瞬接),load 是历史切换与重连回退(回放重建文档)。只给 resume:重连快,但不能翻历史会话;只给 load:能翻,但每次重连整段回放。语义边界:`close` 释放本连接运行态、保留持久化历史(之后 load 仍可用);`delete` 是抹除,之后 load 必须 Session not found。
 
-**会话列表。** 侧栏的会话列表完全来自历次 `session/list`(端点记忆也是)。客户端会循环拉取 `nextCursor` 直到拉空——分页不是可选项,必须正确实现。
+**会话列表。** 侧栏的会话列表完全来自历次 `session/list`(端点记忆也是)。客户端会循环拉取 `nextCursor` 直到拉空——分页不是可选项,必须正确实现。完整分页结果是该端点的权威快照:本地记住但快照里缺失的 id 会被移除,空结果同样会清空旧记忆;仅另一个实时连接已在使用的会话会作为并发保护而保留。
 
 **回合可见性。** 只有消息块时,执行期是黑箱:thought 流驱动「思考中」的动态呈现,工具卡是执行进度的主要锚点,且每张卡必须推终态(§4.2)。
 
@@ -198,7 +198,8 @@ Panda 注册的 client 侧 handler 全集:
 
 | 项 | 预算 | 超时后果 |
 | --- | --- | --- |
-| 控制面 RPC:`initialize`、`session/new`、`session/load`、`session/list`、`session/resume`、`session/delete`、`session/set_mode`、`session/set_config_option`、`logout` | **30 s**(`CONTROL_REQUEST_TIMEOUT_MS`) | 判定 agent 挂死,整条连接拆除 |
+| 控制面 RPC:`initialize`、`session/new`、`session/list`、`session/resume`、`session/delete`、`session/set_mode`、`session/set_config_option`、`logout` | **30 s**(`CONTROL_REQUEST_TIMEOUT_MS`) | 判定 agent 挂死,整条连接拆除 |
+| `session/load` | **连续 30 s 没有收到正确路由的回放 update**,且**总计不超过 120 s**(`SESSION_LOAD_HARD_TIMEOUT_MS`) | 判定 agent 挂死,整条连接拆除 |
 | `session/prompt` | 不限时 | 回合跑多久算多久,用户用取消兜底 |
 | `authenticate` | 不限时 | OAuth 等用户带外操作 |
 | `session/close` | 1.5 s(客户端侧竞速) | 客户端直接断线 |
@@ -206,7 +207,7 @@ Panda 注册的 client 侧 handler 全集:
 时序建议:
 
 - **生命周期伴生通知放在对应 RPC response 之后发**(如 `session/new` 后的 `available_commands_update`):response 前客户端尚未 adopt 该 `sessionId`,虽然放行但顺序不可依赖;参考实现用 after-response helper 钉住这个姿势。
-- **`session/load` 的历史回放通知在 load 响应之前流式发**:客户端在发请求前就把路由切到目标会话(stage→commit 事务),响应前的回放正好落在暂存文档上,响应即提交。
+- **`session/load` 的历史回放通知在 load 响应之前流式发**:客户端在发请求前就把路由切到目标会话(stage→commit 事务),响应前的回放正好落在暂存文档上;每条正确路由的 update 会重置 30 秒空闲期限,响应即提交。回放仍须在 120 秒硬上限内完成。
 - 会话内通知全程必须带同一 `sessionId`(重连 resume 后同样)。
 
 ## 7. 非目标:双方都不走的方法面
