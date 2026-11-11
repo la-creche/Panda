@@ -13,7 +13,12 @@ import {
   type RequestPermissionResponse,
   type Stream,
 } from '@agentclientprotocol/sdk';
-import { CONTROL_REQUEST_TIMEOUT_MS, LiveAcpClient, type LiveClientHandlers } from './LiveAcpClient';
+import {
+  CONTROL_REQUEST_TIMEOUT_MS,
+  SESSION_LOAD_HARD_TIMEOUT_MS,
+  LiveAcpClient,
+  type LiveClientHandlers,
+} from './LiveAcpClient';
 import type { McpServerConfig } from '../mcpServers';
 import type { PermissionDecision } from '../policy';
 import { StreamTransport } from './transport/StreamTransport';
@@ -82,6 +87,9 @@ type Harness = Records & {
     deleteRequests: string[];
     newSessionParams: Array<Record<string, unknown>>;
     loadParams: Array<Record<string, unknown>>;
+    notifyLoadUpdate:
+      | ((update: { sessionUpdate: string; [key: string]: unknown }, sessionId?: string) => Promise<void>)
+      | null;
   };
   serverConnection: AgentConnection;
   /** Simulates the ACP service dying: kills the transport in both directions. */
@@ -267,6 +275,9 @@ async function setup(opts: FakeAgentOptions = {}): Promise<Harness> {
     deleteRequests: [] as string[],
     newSessionParams: [] as Array<Record<string, unknown>>,
     loadParams: [] as Array<Record<string, unknown>>,
+    notifyLoadUpdate: null as
+      | ((update: { sessionUpdate: string; [key: string]: unknown }, sessionId?: string) => Promise<void>)
+      | null,
   };
 
   const caps = opts.capabilities ?? {};
@@ -331,6 +342,11 @@ async function setup(opts: FakeAgentOptions = {}): Promise<Harness> {
     }))
     .onRequest(methods.agent.session.load, async (ctx) => {
       agentState.loadParams.push(ctx.params as Record<string, unknown>);
+      agentState.notifyLoadUpdate = (update, sessionId = ctx.params.sessionId) =>
+        ctx.client.notify(methods.client.session.update, {
+          sessionId,
+          update,
+        });
       await opts.beforeLoad?.();
       if (opts.failLoadFor?.includes(ctx.params.sessionId)) {
         throw new Error(`session ${ctx.params.sessionId} 不存在`);
@@ -1699,6 +1715,99 @@ describe('LiveAcpClient', () => {
       expect(h.connected).toEqual([]);
       h.closeAll();
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports a timeout disconnect when session/load produces no replay progress', async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const h = await setup({ capabilities: { loadSession: true }, beforeLoad: never });
+      const switching = h.acpClient.loadSession('s-2', '/tmp/project');
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(CONTROL_REQUEST_TIMEOUT_MS + 100);
+      await switching;
+      expect(h.disconnected).toEqual(['agent session/load timed out after 30s']);
+      h.closeAll();
+    } finally {
+      errorSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('resets the session/load idle timeout when replay updates arrive', async () => {
+    vi.useFakeTimers();
+    let releaseLoad: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => (releaseLoad = resolve));
+    try {
+      const h = await setup({ capabilities: { loadSession: true }, beforeLoad: () => gate });
+      const switching = h.acpClient.loadSession('s-2', '/tmp/project');
+      await vi.advanceTimersByTimeAsync(0);
+      for (let i = 0; i < 3; i++) {
+        await vi.advanceTimersByTimeAsync(CONTROL_REQUEST_TIMEOUT_MS - 1_000);
+        await h.agentState.notifyLoadUpdate?.({
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: `${i}` },
+        });
+      }
+      expect(h.disconnected).toEqual([]);
+      releaseLoad?.();
+      await switching;
+      expect(h.switchLog.at(-1)).toEqual({ kind: 'commit', era: 1 });
+      h.closeAll();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not count a foreign-session update as session/load progress', async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const h = await setup({ capabilities: { loadSession: true }, beforeLoad: never });
+      const switching = h.acpClient.loadSession('s-2', '/tmp/project');
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(CONTROL_REQUEST_TIMEOUT_MS - 1_000);
+      await h.agentState.notifyLoadUpdate?.(
+        { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'wrong session' } },
+        's-1',
+      );
+      await vi.advanceTimersByTimeAsync(1_100);
+      await switching;
+      expect(h.disconnected).toEqual(['agent session/load timed out after 30s']);
+      h.closeAll();
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('enforces a hard session/load ceiling even while replay updates arrive', async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const h = await setup({ capabilities: { loadSession: true }, beforeLoad: never });
+      const switching = h.acpClient.loadSession('s-2', '/tmp/project');
+      await vi.advanceTimersByTimeAsync(0);
+      for (let elapsed = 0; elapsed < SESSION_LOAD_HARD_TIMEOUT_MS; elapsed += CONTROL_REQUEST_TIMEOUT_MS - 1_000) {
+        await vi.advanceTimersByTimeAsync(
+          Math.min(CONTROL_REQUEST_TIMEOUT_MS - 1_000, SESSION_LOAD_HARD_TIMEOUT_MS - elapsed),
+        );
+        if (elapsed + CONTROL_REQUEST_TIMEOUT_MS - 1_000 < SESSION_LOAD_HARD_TIMEOUT_MS) {
+          await h.agentState.notifyLoadUpdate?.({
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: 'progress' },
+          });
+        }
+      }
+      await switching;
+      expect(h.disconnected).toEqual(['agent session/load timed out after 120s']);
+      h.closeAll();
+    } finally {
+      errorSpy.mockRestore();
       vi.useRealTimers();
     }
   });
