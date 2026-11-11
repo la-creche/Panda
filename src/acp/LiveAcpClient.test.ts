@@ -1309,6 +1309,7 @@ describe('LiveAcpClient', () => {
   });
 
   it('loadSession switches sessions and replays history onto a clean document', async () => {
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
     const h = await setup({
       capabilities: { loadSession: true },
       history: {
@@ -1317,6 +1318,10 @@ describe('LiveAcpClient', () => {
             sessionUpdate: 'agent_message_chunk',
             messageId: 'old',
             content: { type: 'text', text: '历史消息' },
+          },
+          {
+            sessionUpdate: 'agent_thought_chunk',
+            content: { type: 'text', text: 'private diagnostic content' },
           },
         ],
       },
@@ -1336,6 +1341,21 @@ describe('LiveAcpClient', () => {
         content: { type: 'text', text: '历史消息' },
       }),
     );
+    expect(infoSpy).toHaveBeenCalledWith(
+      '[panda/acp] session/load replay finished',
+      expect.objectContaining({
+        sessionId: 's-2',
+        outcome: 'completed',
+        updateCount: 2,
+        updateKinds: { agent_message_chunk: 1, agent_thought_chunk: 1 },
+        elapsedMs: expect.any(Number),
+        firstUpdateMs: expect.any(Number),
+        idleMs: expect.any(Number),
+      }),
+    );
+    const diagnostic = infoSpy.mock.calls.find(([message]) => message === '[panda/acp] session/load replay finished');
+    expect(JSON.stringify(diagnostic)).not.toContain('private diagnostic content');
+    infoSpy.mockRestore();
     h.closeAll();
   });
 
@@ -1722,6 +1742,7 @@ describe('LiveAcpClient', () => {
   it('reports a timeout disconnect when session/load produces no replay progress', async () => {
     vi.useFakeTimers();
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
     try {
       const h = await setup({ capabilities: { loadSession: true }, beforeLoad: never });
       const switching = h.acpClient.loadSession('s-2', '/tmp/project');
@@ -1729,8 +1750,22 @@ describe('LiveAcpClient', () => {
       await vi.advanceTimersByTimeAsync(CONTROL_REQUEST_TIMEOUT_MS + 100);
       await switching;
       expect(h.disconnected).toEqual(['agent session/load timed out after 30s']);
+      expect(infoSpy).toHaveBeenCalledWith(
+        '[panda/acp] session/load replay finished',
+        expect.objectContaining({
+          sessionId: 's-2',
+          outcome: 'timeout',
+          elapsedMs: CONTROL_REQUEST_TIMEOUT_MS,
+          firstUpdateMs: null,
+          idleMs: CONTROL_REQUEST_TIMEOUT_MS,
+          updateCount: 0,
+          updateKinds: {},
+          error: 'session/load timed out after 30s',
+        }),
+      );
       h.closeAll();
     } finally {
+      infoSpy.mockRestore();
       errorSpy.mockRestore();
       vi.useRealTimers();
     }
@@ -1738,6 +1773,7 @@ describe('LiveAcpClient', () => {
 
   it('resets the session/load idle timeout when replay updates arrive', async () => {
     vi.useFakeTimers();
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
     let releaseLoad: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => (releaseLoad = resolve));
     try {
@@ -1752,11 +1788,16 @@ describe('LiveAcpClient', () => {
         });
       }
       expect(h.disconnected).toEqual([]);
+      expect(infoSpy).toHaveBeenCalledWith(
+        '[panda/acp] session/load replay progress',
+        expect.objectContaining({ sessionId: 's-2', updateCount: 3 }),
+      );
       releaseLoad?.();
       await switching;
       expect(h.switchLog.at(-1)).toEqual({ kind: 'commit', era: 1 });
       h.closeAll();
     } finally {
+      infoSpy.mockRestore();
       vi.useRealTimers();
     }
   });
