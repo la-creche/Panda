@@ -1,5 +1,6 @@
 import type { AcpContentBlock } from './protocol/types';
 import { t } from './i18n';
+import { randomUuid } from './uuid';
 
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 export const MAX_PROMPT_IMAGES = 4;
@@ -56,7 +57,7 @@ export async function fileToAttachment(file: File): Promise<ImageAttachment> {
   }
   const bytes = new Uint8Array(await file.arrayBuffer());
   return {
-    id: globalThis.crypto.randomUUID(),
+    id: randomUuid(),
     name: file.name || t('attach.pastedName'),
     mimeType: file.type,
     data: bytesToBase64(bytes),

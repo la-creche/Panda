@@ -13,6 +13,7 @@
 import { isWorkspace, type Workspace } from './workspace';
 import { t } from './i18n';
 import { notifyUser } from './userNotice';
+import { randomUuid } from './uuid';
 
 /** One saved connection preset. `name` is user-chosen — never the protocol's
  * agent-reported name (agentName at initialize; see CONTEXT.md).
@@ -297,5 +298,5 @@ export function updateProfileFields(
 }
 
 export function newProfileId(): string {
-  return globalThis.crypto.randomUUID();
+  return randomUuid();
 }

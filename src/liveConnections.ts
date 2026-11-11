@@ -29,6 +29,7 @@ import { loadMcpServers, mcpServersForProfile } from './mcpServers';
 import { cwdToWorkspace, workspaceToCwd, type Workspace } from './workspace';
 import { alwaysAskPolicy, type PermissionDecision, type PermissionPolicy } from './policy';
 import { notifyUser } from './userNotice';
+import { randomUuid } from './uuid';
 
 /**
  * Live connection manager (issue #21, ADR 0002): one `LiveAcpClient` + one
@@ -58,7 +59,7 @@ export function isDirectConnectionId(connectionId: string): boolean {
 }
 
 export function newDirectConnectionId(): string {
-  return DIRECT_CONNECTION_PREFIX + globalThis.crypto.randomUUID();
+  return DIRECT_CONNECTION_PREFIX + randomUuid();
 }
 
 /** Remembers the endpoint between reloads; persistence is best-effort. */
