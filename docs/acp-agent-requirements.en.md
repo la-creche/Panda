@@ -170,7 +170,7 @@ None of these are entry requirements, but each omission has a clear user-visible
 
 **Session persistence (at least one of the two; both is best).** `resume` and `load` differ in emphasis: resume is the reconnect-preferred path (no replay, instant); load is history switching and the reconnect fallback (rebuilds the document by replay). Resume only: fast reconnects but no browsing history. Load only: browsing works but every reconnect replays everything. Semantic boundary: `close` releases this connection's runtime state and *keeps* persisted history (a later `load` still works); `delete` erases — a later `load` must say Session not found.
 
-**Session list.** The sidebar's session list comes entirely from `session/list` results (endpoint memory included). The client loops `nextCursor` until exhausted — pagination is not optional, implement it correctly.
+**Session list.** The sidebar's session list comes entirely from `session/list` results (endpoint memory included). The client loops `nextCursor` until exhausted — pagination is not optional, implement it correctly. The completed paginated result is authoritative for the endpoint: remembered ids absent from it are removed, including when the result is empty. A session already active on another live connection is retained as a concurrency guard.
 
 **In-turn visibility.** With message blocks alone, execution is a black box: the thought stream drives the "thinking" animation, tool cards are the main progress anchor, and every card must reach a terminal state (§4.2).
 
