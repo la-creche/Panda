@@ -13,6 +13,7 @@
  * fake.
  */
 import type { McpServer } from '@agentclientprotocol/sdk';
+import { randomUuid } from './uuid';
 
 /** One configured MCP server. `args` is a single whitespace-separated line —
  * the UI edits it as one string; the wire mapping splits it. */
@@ -107,7 +108,7 @@ export function saveMcpServers(servers: McpServerConfig[], storage: McpServerSto
 }
 
 export function newMcpServerId(): string {
-  return globalThis.crypto.randomUUID();
+  return randomUuid();
 }
 
 /** The session-establishment filter (#148): a profile's sessions carry only
