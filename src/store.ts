@@ -401,6 +401,8 @@ export type ConnectionStorePort = {
    */
   adoptSession(sessionId: string, cwd: string): void;
   update(update: AcpSessionUpdate): void;
+  /** Applies one session/load replay with one store publication. */
+  applyReplay(updates: readonly AcpSessionUpdate[]): void;
   setConnection(patch: Partial<ConnectionInfo>): void;
   /** Clears the adopted session's document (permissions live inside it). */
   resetDocument(): void;
@@ -613,6 +615,10 @@ export function connectionStorePort(connectionId: string): ConnectionStorePort {
             }
           : {}),
       }));
+    },
+    applyReplay: (updates) => {
+      if (!requireSession('applyReplay') || updates.length === 0) return;
+      patchDoc((initial) => updates.reduce((doc, update) => applyUpdate(doc, update), initial));
     },
     setConnection: (patch) =>
       patchSlot((state) => ({ connection: { ...state.connection, ...patch } })),
