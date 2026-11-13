@@ -18,6 +18,8 @@ concurrency:
 
 jobs:
   deploy:
+    # Forks inherit this workflow but do not necessarily publish a Pages site.
+    if: github.repository == 'lukaisluka/Panda'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
