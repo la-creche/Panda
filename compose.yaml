@@ -1,0 +1,15 @@
+name: panda
+
+services:
+  web:
+    image: panda:arcane
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${PANDA_BIND_ADDRESS:-127.0.0.1}:${PANDA_PORT:-8530}:8530"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

@@ -58,8 +58,10 @@ Pick by scenario — the desktop build connects stdio agents you develop; the we
   ```
 
   On every successful `main` build, CI smoke-tests this image before creating
-  the next immutable `panda-vX.Y.Z` tag. Failed and superseded builds create no
-  tag, so deployment tools can safely watch that tag prefix.
+  the next immutable `panda-vX.Y.Z` tag and advancing the `arcane` deployment
+  branch to the same commit. Failed and superseded builds change neither ref.
+  Arcane 2.17.2+ can pull that branch with **Sync Files** and **Redeploy After
+  Sync** enabled; the root `compose.yaml` rebuilds the image before deployment.
 
 ## Features
 
