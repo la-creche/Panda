@@ -41,8 +41,9 @@ jobs:
       - run: pnpm --filter panda-test-agent test
 
   # Keep pull requests fast: the image is built only after main's full suite
-  # passes. A green image gets one immutable panda-vX.Y.Z tag; a failed or
-  # superseded run tags nothing. External deployers can watch that namespace.
+  # passes. A green image gets one immutable panda-vX.Y.Z tag, then advances
+  # the `arcane` deployment branch to that exact commit. A failed or
+  # superseded run changes neither ref.
   container-release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: test
@@ -145,3 +146,12 @@ jobs:
           git tag --annotate "$TAG" "$GITHUB_SHA" --message "Panda $VERSION"
           git push origin "refs/tags/$TAG"
           echo "Created $TAG at $GITHUB_SHA after the container smoke test." >> "$GITHUB_STEP_SUMMARY"
+
+      # Arcane Git Sync selects branches, not tag patterns. This branch moves
+      # only after the same commit passed tests, image build, and smoke test.
+      - name: Advance Arcane deployment branch
+        if: steps.plan.outputs.build == 'true'
+        run: |
+          set -euo pipefail
+          git push origin "$GITHUB_SHA:refs/heads/arcane"
+          echo "Advanced the Arcane deployment branch to $GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"
