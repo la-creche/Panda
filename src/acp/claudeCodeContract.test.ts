@@ -194,7 +194,7 @@ describe.skipIf(!hasFixtures)('claude-agent-acp 真实报文契约(#154 回放)'
         onSessionSwitchRollback: (reason) => switchRollbacks.push(reason),
       };
       const acpClient = new LiveAcpClient(handlers);
-      await acpClient.connect(new StreamTransport(clientStream), '/tmp/project');
+      await acpClient.connect(new StreamTransport(clientStream), '/tmp/project', { intent: 'new-session' });
 
       // 真实 initialize(claude-agent-acp 0.75.x):list/resume/delete/close
       // 全量 session 能力 + image + loadSession → Panda 能力矩阵全绿。

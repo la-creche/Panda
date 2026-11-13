@@ -170,7 +170,7 @@ describe.skipIf(!enabled)('claude-agent-acp 真连 e2e(#154 层 2, 花真实 tok
     };
     acpClient = new LiveAcpClient(handlers);
     try {
-      await acpClient.connect(transport, projectDir);
+      await acpClient.connect(transport, projectDir, { intent: 'new-session' });
     } catch (err) {
       console.error('claude-agent-acp 启动日志:\n' + agentLog);
       throw err;

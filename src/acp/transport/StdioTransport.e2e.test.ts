@@ -156,7 +156,7 @@ describe.skipIf(!hasAgentDeps)('StdioTransport × deepagents 测试 agent(e2e)',
     };
     acpClient = new LiveAcpClient(handlers);
     try {
-      await acpClient.connect(transport, '/tmp/project');
+      await acpClient.connect(transport, '/tmp/project', { intent: 'new-session' });
     } catch (err) {
       console.error('test agent(stdio)启动日志:\n' + agentLog);
       throw err;

@@ -68,7 +68,7 @@ The response MUST:
 3. `agentCapabilities`: an absent field means unsupported; **declaring is promising the handler exists — never declare falsely**. `sessionCapabilities.*` is judged by field presence — an empty object `{}` counts as declared.
 4. `authMethods` (optional): agent-managed login methods; entries with `type: "terminal"` are filtered out with a warning (a web host cannot run a TUI).
 
-After the handshake, the client establishes a session by capability: `session/resume` (preferred) → `session/load` (fallback) → `session/new` (last resort).
+After the handshake, a plain connection only fetches `session/list`; it does not create a session. When the user selects an existing session, the client restores by capability: `session/resume` (preferred) → `session/load` (fallback). If neither is available, the link stays connected without an active session. The client sends `session/new` only after the user explicitly selects New session. Connection, restoration, and creation are separate lifecycle actions.
 
 ### 2.2 `session/new`
 
@@ -190,7 +190,7 @@ None of these are entry requirements, but each omission has a clear user-visible
 
 ### 5.3 Tier three: recommended only with the matching capability
 
-**Login (the auth four-piece).** The moment an agent needs login, this is a de-facto MUST: declare `authMethods` → login card → `authenticate(methodId)` (request-scoped url elicitations may run the OAuth flow meanwhile) → the client auto-retries session establishment on success. Throwing `-32000` without declaring anything is an instant client disconnect. `logout` is callable only after declaring `auth.logout`.
+**Login (the auth four-piece).** The moment an agent needs login, this is a de-facto MUST: declare `authMethods` → login card → `authenticate(methodId)` (request-scoped url elicitations may run the OAuth flow meanwhile) → the client retries only the action that authentication blocked. A plain connection still only connects; restoration still restores; only an explicit creation creates. Throwing `-32000` without declaring anything is an instant client disconnect. `logout` is callable only after declaring `auth.logout`.
 
 **Plan dock / command completion / session modes / context compaction.** Respectively for: planned long tasks (multi-step refactors, research), a stable command surface (trigger words, quick actions), an ask/code-style mode concept, and agents that compact context themselves. Modes work like config: after a successful RPC, also send `current_mode_update`, landing idempotently on the same state. Compaction must be reported — unreported, the transcript mutates without explanation, and the user cannot tell "the agent compacted" from "the agent lost history".
 

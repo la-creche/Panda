@@ -98,6 +98,7 @@ function foreground(overrides: Partial<ForegroundLifecycleInput>): ForegroundLif
     mode: 'live',
     docStatus: 'idle',
     connection: { status: 'connected', error: null },
+    hasSession: true,
     switching: false,
     ...overrides,
   };
@@ -158,6 +159,13 @@ describe('foregroundLifecycle (live connection)', () => {
 
   it('stays empty when connected and idle', () => {
     expect(foregroundLifecycle(foreground({})).hint).toBeUndefined();
+  });
+
+  it('keeps a sessionless link read-only until the user selects or creates a session (issue #250)', () => {
+    const sessionless = foregroundLifecycle(foreground({ hasSession: false }));
+    expect(sessionless.composerDisabled).toBe(true);
+    expect(sessionless.composerInputLocked).toBe(true);
+    expect(sessionless.hint).toBe('Connected — select an existing session or start a new one');
   });
 
   it('keeps the field writable only while a permission awaits on a healthy link (#216)', () => {

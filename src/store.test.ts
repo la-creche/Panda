@@ -130,6 +130,24 @@ describe('connection-scoped ports (issue #16)', () => {
     warnSpy.mockRestore();
   });
 
+  it('detaches live routing while retaining the selected transcript for reading (issue #250)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    usePanda.getState().ensureConnection('live');
+    const port = connectionStorePort('live');
+    port.adoptSession('s-1', '/a');
+    port.update({ sessionUpdate: 'user_message', content: [{ type: 'text', text: 'kept' }] });
+
+    port.detachSession();
+    port.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'dropped' } });
+
+    const state = usePanda.getState();
+    expect(state.connections['live']!.connection.sessionId).toBeNull();
+    expect(state.activeSessionId).toBe('s-1');
+    expect(state.connections['live']!.docs['s-1']!.turns).toHaveLength(1);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('before adopting a session'));
+    warnSpy.mockRestore();
+  });
+
   it('closeConnection removes the slot and clears pointers when active', () => {
     usePanda.getState().ensureConnection('live');
     connectionStorePort('live').adoptSession('s-1', '/a');

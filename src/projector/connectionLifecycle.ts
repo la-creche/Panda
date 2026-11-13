@@ -99,6 +99,7 @@ export type ForegroundLifecycleInput = {
   mode: SessionMode;
   docStatus: SessionStatus;
   connection: Pick<ConnectionInfo, 'status' | 'error'>;
+  hasSession: boolean;
   switching: boolean;
 };
 
@@ -155,7 +156,13 @@ export function mainView(input: {
   return activeSessionId === null ? 'onboarding' : 'message-stream';
 }
 
-function hintFor(mode: SessionMode, phase: ConnectionPhase, error: string | null, docStatus: SessionStatus): string | undefined {
+function hintFor(
+  mode: SessionMode,
+  phase: ConnectionPhase,
+  error: string | null,
+  docStatus: SessionStatus,
+  hasSession: boolean,
+): string | undefined {
   if (mode !== 'live') {
     if (docStatus === 'requires_action') return t('lifecycle.awaitingApprovalHint');
     if (docStatus === 'running') return t('lifecycle.working');
@@ -175,6 +182,7 @@ function hintFor(mode: SessionMode, phase: ConnectionPhase, error: string | null
     case 'connected-degraded':
       return error ?? undefined;
     case 'connected':
+      if (!hasSession) return t('lifecycle.noSession');
       // Awaiting-approval is a pause, not work (#216): the composer hint
       // must point at the stream where the permission card waits, in both
       // live and demo — "working" here contradicted the status bar.
@@ -188,11 +196,12 @@ export function foregroundLifecycle({
   mode,
   docStatus,
   connection,
+  hasSession,
   switching,
 }: ForegroundLifecycleInput): ForegroundLifecycle {
   const phase = connectionPhase(connection.status, connection.error, switching);
   const busy = docStatus !== 'idle' || switching;
-  const composerDisabled = mode === 'live' ? !isLinkUp(phase) || busy : busy;
+  const composerDisabled = mode === 'live' ? !isLinkUp(phase) || !hasSession || busy : busy;
   return {
     phase,
     error: connection.error,
@@ -201,6 +210,6 @@ export function foregroundLifecycle({
     composerDisabled,
     composerInputLocked: composerDisabled && !(docStatus === 'requires_action' && (mode !== 'live' || isLinkUp(phase))),
     canStop: mode === 'live' && isLinkUp(phase) && docStatus === 'running',
-    hint: hintFor(mode, phase, connection.error, docStatus),
+    hint: hintFor(mode, phase, connection.error, docStatus, hasSession),
   };
 }

@@ -55,9 +55,16 @@ export function useLiveSession() {
   return useMemo<LiveSessionFacade>(
     () => ({
       connectDirect: (url: string, workspace: Workspace) =>
-        connectLiveConnection(newDirectConnectionId(), { kind: 'websocket', url }, workspace),
+        connectLiveConnection(newDirectConnectionId(), { kind: 'websocket', url }, workspace, {
+          sessionIntent: 'new-session',
+        }),
       connectProfile: (profile: AgentProfile) =>
         connectLiveConnection(profile.id, profileToLiveTarget(profile), profile.workspace, { profileId: profile.id }),
+      connectProfileForNewSession: (profile: AgentProfile) =>
+        connectLiveConnection(profile.id, profileToLiveTarget(profile), profile.workspace, {
+          profileId: profile.id,
+          sessionIntent: 'new-session',
+        }),
       reconnectForeground: (opts?: ReconnectOptions) =>
         // Row-level actions name their slot (bug hunt #1); the foreground is
         // only the default. Target resolution lives in the manager (testable).
@@ -97,6 +104,9 @@ export interface LiveSessionFacade extends ForegroundSessionController {
   connectDirect: (url: string, workspace: Workspace) => void;
   /** Connects an Agent 配置's slot with its stored url/workspace. */
   connectProfile: (profile: AgentProfile) => void;
+  /** Connects an Agent 配置 and creates the session explicitly requested by
+   * the new-session dialog. */
+  connectProfileForNewSession: (profile: AgentProfile) => void;
   /**
    * Reconnects a slot — `opts.connectionId` names the row-level target
    * (error-block buttons); the foreground is the default. Form-edited
