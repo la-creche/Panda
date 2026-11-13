@@ -68,7 +68,7 @@ Panda 建连后的第一个请求,固定为:
 3. `agentCapabilities`:字段缺省即不支持;**声明即承诺有对应 handler,不得虚假声明**。`sessionCapabilities.*` 的判定是「字段存在」——空对象 `{}` 就算声明。
 4. `authMethods`(可选):agent 托管登录方式;`type: "terminal"` 的条目会被过滤丢弃(web 宿主跑不了 TUI)并打 warn。
 
-握手通过后,客户端按能力建立会话:`session/resume`(优先)→ `session/load`(回退)→ `session/new`(兜底)。
+握手通过后,普通连接只拉取 `session/list`,不会隐式创建会话。用户选择已有会话时,客户端按能力恢复:`session/resume`(优先)→ `session/load`(回退);两者都不支持时保持已连接但无活动会话。只有用户明确选择「新建会话」时,客户端才发 `session/new`。因此,连接、恢复与新建是三个独立生命周期动作。
 
 ### 2.2 `session/new`
 
@@ -190,7 +190,7 @@ Panda 注册的 client 侧 handler 全集:
 
 ### 5.3 第三梯队:有对应能力才推荐
 
-**登录(auth 四件套)。** agent 一旦需要登录,这就是事实上的必须:声明 `authMethods` 走登录卡 → `authenticate(methodId)`(期间可发 request-scoped url elicitation 走 OAuth)→ 成功后客户端自动重试建会话;什么都不声明却抛 `-32000`,客户端直接断连报错。`logout` 仅在声明 `auth.logout` 后可调。
+**登录(auth 四件套)。** agent 一旦需要登录,这就是事实上的必须:声明 `authMethods` 走登录卡 → `authenticate(methodId)`(期间可发 request-scoped url elicitation 走 OAuth)→ 成功后客户端重试被认证阻断的原动作。普通连接仍只连接;恢复仍恢复;明确新建才新建。什么都不声明却抛 `-32000`,客户端直接断连报错。`logout` 仅在声明 `auth.logout` 后可调。
 
 **计划坞 / 命令补全 / 会话模式 / 上下文压缩。** 分别适用于:计划性长任务(多步重构、调研)、有稳定命令面(触发词、快捷动作)、有 ask/code 类模式概念、agent 自己做上下文压缩。模式切换与配置项同理:RPC 成功后补发 `current_mode_update` 通知,幂等落在同一状态。压缩必须报告——不报告的话 transcript 无解释地突变,用户无法区分「agent 压缩了」和「agent 丢了历史」。
 

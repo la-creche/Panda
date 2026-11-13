@@ -111,7 +111,7 @@ export function NewSessionDialog({ isOpen, onOpenChange, onStarted, live, profil
                   start(() =>
                     action === 'new'
                       ? live.newSession(cwd ?? '/', profile.id)
-                      : live.connectProfile(profile),
+                      : live.connectProfileForNewSession(profile),
                   )
                 }
                 title={

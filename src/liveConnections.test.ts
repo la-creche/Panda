@@ -206,6 +206,29 @@ describe('parallel connections (issue #21)', () => {
 });
 
 describe('row-level action routing (bug hunt #1/#5)', () => {
+  it('passes a new-session intent only when the caller explicitly requests it (issue #250)', async () => {
+    const stubs = installStubClients();
+
+    await connectLiveConnection(
+      'agent-a',
+      { kind: 'websocket', url: 'ws://agent-a/acp' },
+      { kind: 'local-directory', path: '/agent-a' },
+    );
+    expect(stubs[0]!.client.connect).toHaveBeenCalledWith(expect.anything(), '/agent-a', undefined);
+
+    await connectLiveConnection(
+      'agent-b',
+      { kind: 'websocket', url: 'ws://agent-b/acp' },
+      { kind: 'local-directory', path: '/agent-b' },
+      { sessionIntent: 'new-session' },
+    );
+    expect(stubs[1]!.client.connect).toHaveBeenCalledWith(
+      expect.anything(),
+      '/agent-b',
+      { intent: 'new-session' },
+    );
+  });
+
   it('#1 错误块重连只拨本 slot:后台 error 的 agent-b 重连,前台健康的 agent-a 不被拆', async () => {
     const stubs = installStubClients();
     await connectedStub('agent-a', stubs, 's-a');

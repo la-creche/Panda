@@ -61,8 +61,9 @@ import { notifyUser } from '../userNotice';
  * (v2's state_update notifications will slot in at this same seam.)
  *
  * Session lifecycle (Phase 2): capabilities gate everything; reconnect prefers
- * `session/resume` (transcript preserved, no replay), falls back to
- * `session/load` (history replayed onto a clean document), else starts fresh.
+ * `session/resume` (transcript preserved, no replay), then falls back to
+ * `session/load` (history replayed onto a clean document). A plain connection
+ * does not create a session; only an explicit new-session intent does.
  *
  * Session switches are transactional (issue #17): `session/load` stages the
  * target first and commits only on success — a failure rolls the client's
@@ -87,6 +88,9 @@ export type LiveClientHandlers = {
   onUpdate(update: AcpSessionUpdate): void;
   onConnected(info: { agentName: string; protocolVersion: number }): void;
   onSessionId(sessionId: string, cwd: string): void;
+  /** The requested session cannot be restored; keep the link but detach it
+   * from the retained read-only document (issue #250). */
+  onSessionUnavailable?(): void;
   /**
    * Session modes from a session/new · session/load result (null = the agent
    * advertises none). Not emitted on resume: v1's ResumeSessionResponse
@@ -121,7 +125,7 @@ export type LiveClientHandlers = {
    * agent declared none (no UI change).
    */
   onAuthMethods(methods: AcpAuthMethod[]): void;
-  /** `authenticate(methodId)` succeeded and a session now lives (#90). */
+  /** `authenticate(methodId)` succeeded; any blocked session intent settled. */
   onAuthenticated(methodId: string): void;
   /** Server-side session list (session/list, all pages). */
   onSessions(entries: SessionSummary[]): void;
@@ -178,6 +182,11 @@ type PendingElicitation = {
   scope: 'session' | 'auth';
   resolve: (response: CreateElicitationResponse) => void;
 };
+
+type SessionIntent =
+  | { kind: 'connect' }
+  | { kind: 'new'; cwd: string }
+  | { kind: 'resume'; sessionId: string; cwd: string };
 
 /** Keep in sync with package.json. */
 const CLIENT_INFO = { name: 'panda', title: 'Panda', version: '0.1.0' } as const;
@@ -369,8 +378,9 @@ export class LiveAcpClient {
   private agentSupportsClose = false;
   /** initialize's identity, cached to settle onConnected after authenticate. */
   private initInfo: { agentName: string; protocolVersion: number } | null = null;
-  /** cwd of the last connect/newSession — authenticate retries with it. */
-  private lastCwd: string | null = null;
+  /** Session work blocked on authentication. Null after a completed connect
+   * or for a proactive login on an already usable link (issue #250). */
+  private pendingAuthIntent: SessionIntent | null = null;
   /** Local id mint for elicitation/create requests (form mode carries no wire id). */
   private elicitationSeq = 0;
   /**
@@ -410,11 +420,12 @@ export class LiveAcpClient {
   }
 
   /**
-   * Connects and establishes a session: transport open → initialize (+
-   * capabilities, session list) → resume / load / new. Failures — including
-   * transport-level ones — are reported through `onDisconnected`, never
-   * thrown; the connection state in the store is the source of truth for
-   * the UI.
+   * Connects to an agent: transport open → initialize (+ capabilities and
+   * session list), then optionally resumes or explicitly creates a session.
+   * A plain connect stops with a usable sessionless link (issue #250).
+   * Failures — including transport-level ones — are reported through
+   * `onDisconnected`, never thrown; the connection state in the store is
+   * the source of truth for the UI.
    *
    * `opts.probe` (#221) stops after the initialize handshake: no session
    * establishment, no session list — the caller (the profile form's
@@ -424,7 +435,7 @@ export class LiveAcpClient {
   async connect(
     transport: AcpTransport,
     cwd: string,
-    opts?: { sessionId?: string; probe?: boolean },
+    opts?: { sessionId?: string; probe?: boolean; intent?: 'new-session' },
   ): Promise<void> {
     // Replace any prior connection silently — its close handler is muted by
     // the connection-identity check below, and its era by the generation
@@ -433,6 +444,12 @@ export class LiveAcpClient {
     this.disconnectReported = false;
     const generation = this.connectionGeneration;
     this.transport = transport;
+    const sessionIntent: SessionIntent = opts?.sessionId
+      ? { kind: 'resume', sessionId: opts.sessionId, cwd }
+      : opts?.intent === 'new-session'
+        ? { kind: 'new', cwd }
+        : { kind: 'connect' };
+    this.pendingAuthIntent = sessionIntent;
 
     /** True while this connect's era is still the current one. */
     const isCurrent = () => generation === this.connectionGeneration;
@@ -549,7 +566,6 @@ export class LiveAcpClient {
       this.agentSupportsLogout = init.agentCapabilities?.auth?.logout != null;
       this.agentSupportsClose = init.agentCapabilities?.sessionCapabilities?.close != null;
       this.initInfo = { agentName, protocolVersion: init.protocolVersion };
-      this.lastCwd = cwd;
       this.handlers.onCapabilities(this.capabilities);
       this.handlers.onAuthMethods(this.authMethods);
       if (opts?.probe) {
@@ -557,6 +573,7 @@ export class LiveAcpClient {
         // and drop the link; no session is ever established.
         this.linkEstablished = true;
         this.handlers.onConnected({ agentName, protocolVersion: init.protocolVersion });
+        this.pendingAuthIntent = null;
         console.info(`[panda/acp] probe ok: ${agentName} (protocol v${init.protocolVersion})`);
         this.disconnect();
         return;
@@ -567,42 +584,13 @@ export class LiveAcpClient {
         return;
       }
 
-      if (opts?.sessionId) {
-        if (this.can('resume')) {
-          // Transcript stays as-is: the agent context resumes without replay.
-          this.sessionId = opts.sessionId;
-          this.handlers.onSessionId(opts.sessionId, cwd);
-          await this.controlRequest(
-            'session/resume',
-            connection.agent.request(methods.agent.session.resume, {
-              sessionId: opts.sessionId,
-              cwd,
-            }),
-          );
-          if (!isCurrent()) {
-            discardSuperseded('resume');
-            return;
-          }
-          console.info(`[panda/acp] resumed session ${opts.sessionId} (transcript kept)`);
-        } else if (this.can('loadSession')) {
-          await this.loadSessionInternal(connection, opts.sessionId, cwd, generation);
-          if (!isCurrent()) {
-            discardSuperseded('load');
-            return;
-          }
-          console.info(`[panda/acp] reconnected via session/load replay: ${opts.sessionId}`);
-        } else {
-          console.warn('[panda/acp] agent 不支持会话恢复（resume/loadSession 均未声明）— 已新建会话');
-          await this.establishSession(connection, cwd, generation);
-        }
-      } else {
-        await this.establishSession(connection, cwd, generation);
-      }
+      await this.applySessionIntent(connection, sessionIntent, generation);
 
       if (!isCurrent()) {
-        discardSuperseded('session established');
+        discardSuperseded('session intent');
         return;
       }
+      this.pendingAuthIntent = null;
       this.linkEstablished = true;
       this.handlers.onConnected({ agentName, protocolVersion: init.protocolVersion });
       console.info(`[panda/acp] connected: ${agentName} (protocol v${init.protocolVersion})`);
@@ -674,7 +662,6 @@ export class LiveAcpClient {
       notifyUser('error', t('acp.notice.busy'));
       return;
     }
-    this.lastCwd = cwd;
     try {
       await this.establishSession(connection, cwd, generation);
     } catch (err) {
@@ -688,6 +675,7 @@ export class LiveAcpClient {
       if (isAuthRequired(err) && this.authMethods.length > 0) {
         // Credentials can expire mid-connection; the login card replaces the
         // composer until a method succeeds.
+        this.pendingAuthIntent = { kind: 'new', cwd };
         this.handlers.onAuthChallenge({ methods: this.authMethods, message: describeError(err) });
         return;
       }
@@ -697,8 +685,10 @@ export class LiveAcpClient {
   }
 
   /**
-   * Runs one agent-managed login method (v1 `authenticate`) and re-attempts
-   * session establishment on success. While the RPC is pending the agent may
+   * Runs one agent-managed login method (v1 `authenticate`) and resumes only
+   * the session intent that authentication blocked. Proactive login on an
+   * already usable link does not manufacture a session (issue #250). While
+   * the RPC is pending the agent may
    * send a request-scoped url elicitation (OAuth link) — it renders on the
    * auth card via onAuthElicitation.
    */
@@ -720,13 +710,19 @@ export class LiveAcpClient {
         console.info('[panda/acp] superseded authenticate completed after replacement — discarded');
         return;
       }
-      await this.establishSession(connection, this.lastCwd ?? '/', generation);
+      const intent = this.pendingAuthIntent;
+      if (intent) await this.applySessionIntent(connection, intent, generation);
       if (generation !== this.connectionGeneration) return;
-      // establishSession superseded-returns silently; only a live era settles.
-      if (this.initInfo) this.handlers.onConnected(this.initInfo);
+      this.pendingAuthIntent = null;
+      // A connect blocked before onConnected settles now. Proactive auth on
+      // an established link must not emit a duplicate connection event.
+      if (!this.linkEstablished && this.initInfo) {
+        this.linkEstablished = true;
+        this.handlers.onConnected(this.initInfo);
+      }
       this.handlers.onAuthElicitation(null);
       this.handlers.onAuthenticated(methodId);
-      console.info(`[panda/acp] authenticated via "${methodId}", session established`);
+      console.info(`[panda/acp] authenticated via "${methodId}"`);
     } catch (err) {
       if (generation !== this.connectionGeneration) {
         console.info('[panda/acp] superseded authenticate failed after replacement — failure discarded');
@@ -1275,6 +1271,45 @@ export class LiveAcpClient {
 
   private can(key: CapabilityKey): boolean {
     return this.capability(key).available;
+  }
+
+  /** Applies only the session work the caller requested (issue #250). */
+  private async applySessionIntent(
+    connection: ClientConnection,
+    intent: SessionIntent,
+    generation: number,
+  ): Promise<void> {
+    if (intent.kind === 'connect') return;
+    if (intent.kind === 'new') {
+      await this.establishSession(connection, intent.cwd, generation);
+      return;
+    }
+    if (this.can('resume')) {
+      // Transcript stays as-is: the agent context resumes without replay.
+      this.sessionId = intent.sessionId;
+      this.handlers.onSessionId(intent.sessionId, intent.cwd);
+      await this.controlRequest(
+        'session/resume',
+        connection.agent.request(methods.agent.session.resume, {
+          sessionId: intent.sessionId,
+          cwd: intent.cwd,
+        }),
+      );
+      if (generation !== this.connectionGeneration) return;
+      console.info(`[panda/acp] resumed session ${intent.sessionId} (transcript kept)`);
+      return;
+    }
+    if (this.can('loadSession')) {
+      await this.loadSessionInternal(connection, intent.sessionId, intent.cwd, generation);
+      if (generation !== this.connectionGeneration) return;
+      console.info(`[panda/acp] reconnected via session/load replay: ${intent.sessionId}`);
+      return;
+    }
+    this.sessionId = null;
+    this.handlers.onSessionUnavailable?.();
+    console.warn(
+      `[panda/acp] cannot restore session ${intent.sessionId}: agent declared neither resume nor loadSession; link kept sessionless`,
+    );
   }
 
   private async establishSession(connection: ClientConnection, cwd: string, generation: number): Promise<void> {
@@ -1833,6 +1868,7 @@ export class LiveAcpClient {
     this.transport?.disconnect();
     this.transport = null;
     this.sessionId = null;
+    this.pendingAuthIntent = null;
     this.sessionSwitch = false;
     this.loadProgress = null;
   }

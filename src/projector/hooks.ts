@@ -47,11 +47,11 @@ export function useSessionModes(controller: ForegroundSessionController) {
 export function useForegroundLifecycle(): ForegroundLifecycle {
   const mode = usePanda((s) => s.mode);
   const docStatus = useActiveDoc().status;
-  const { status, error } = useActiveConnection();
+  const { status, error, sessionId } = useActiveConnection();
   const switching = useActiveSwitching() !== null;
   return useMemo(
-    () => foregroundLifecycle({ mode, docStatus, connection: { status, error }, switching }),
-    [mode, docStatus, status, error, switching],
+    () => foregroundLifecycle({ mode, docStatus, connection: { status, error }, hasSession: sessionId !== null, switching }),
+    [mode, docStatus, status, error, sessionId, switching],
   );
 }
 

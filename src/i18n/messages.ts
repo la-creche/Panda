@@ -592,6 +592,10 @@ export const messages = {
     en: 'Not connected to an ACP service — connect from the sidebar',
     zh: '未连接 ACP 服务 — 在侧栏连接',
   },
+  'lifecycle.noSession': {
+    en: 'Connected — select an existing session or start a new one',
+    zh: '已连接 — 选择已有会话或新建会话',
+  },
   'lifecycle.switching': { en: 'Switching session…', zh: '切换会话中…' },
 
   // ---- live connection driver ----

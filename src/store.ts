@@ -400,6 +400,8 @@ export type ConnectionStorePort = {
    * points the UI at it.
    */
   adoptSession(sessionId: string, cwd: string): void;
+  /** Clears the live routing anchor but keeps retained documents readable. */
+  detachSession(): void;
   update(update: AcpSessionUpdate): void;
   /** Applies one session/load replay with one store publication. */
   applyReplay(updates: readonly AcpSessionUpdate[]): void;
@@ -622,6 +624,10 @@ export function connectionStorePort(connectionId: string): ConnectionStorePort {
     },
     setConnection: (patch) =>
       patchSlot((state) => ({ connection: { ...state.connection, ...patch } })),
+    detachSession: () => {
+      currentSessionId = null;
+      patchSlot((state) => ({ connection: { ...state.connection, sessionId: null } }));
+    },
     resetDocument: () => {
       // Resetting with no adopted session is a no-op, not a warning: drivers
       // legitimately reset on a fresh connect before any session exists.

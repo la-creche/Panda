@@ -117,6 +117,8 @@ type FakeAgentOptions = {
   newSessionIds?: string[];
   /** Reconnect target passed to LiveAcpClient.connect. */
   resume?: { sessionId: string };
+  /** Connect without an implicit new-session intent (issue #250). */
+  connectOnly?: boolean;
   /** Connect with the probe flag (#221): handshake only, no session. */
   probe?: boolean;
   /** Sees every JSON-RPC message the fake agent sends (wire-level assertions). */
@@ -385,7 +387,14 @@ async function setup(opts: FakeAgentOptions = {}): Promise<Harness> {
       ...(opts.mcpServers ? { mcpServers: opts.mcpServers } : {}),
     },
   );
-  await acpClient.connect(new StreamTransport(clientStream), '/tmp/project', opts.probe ? { probe: true } : opts.resume);
+  const connectOptions = opts.probe
+    ? { probe: true as const }
+    : opts.resume
+      ? opts.resume
+      : opts.connectOnly
+        ? undefined
+        : { intent: 'new-session' as const };
+  await acpClient.connect(new StreamTransport(clientStream), '/tmp/project', connectOptions);
 
   return {
     ...records,
@@ -1216,6 +1225,15 @@ describe('LiveAcpClient', () => {
 
   // -- session lifecycle -----------------------------------------------------
 
+  it('plain connect lists sessions without creating an empty session (issue #250)', async () => {
+    const h = await setup({ connectOnly: true, capabilities: { list: true } });
+
+    expect(h.connected).toHaveLength(1);
+    expect(h.agentState.newSessionParams).toEqual([]);
+    expect(h.sessionIds).toEqual([]);
+    h.closeAll();
+  });
+
   it('reads capabilities and fetches the session list when advertised', async () => {
     const h = await setup({
       capabilities: { loadSession: true, list: true, resume: true, delete: true },
@@ -1298,12 +1316,13 @@ describe('LiveAcpClient', () => {
     h.closeAll();
   });
 
-  it('reconnect starts a fresh session when the agent supports neither', async () => {
+  it('reconnect stays sessionless when the agent supports neither (issue #250)', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const h = await setup({ resume: { sessionId: 's-99' } });
-    expect(h.sessionIds).toEqual(['s-1']); // fresh session/new
+    expect(h.agentState.newSessionParams).toEqual([]);
+    expect(h.sessionIds).toEqual([]);
     expect(h.replays).toEqual([]);
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('不支持会话恢复'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('cannot restore session'));
     warnSpy.mockRestore();
     h.closeAll();
   });
@@ -2202,7 +2221,7 @@ describe('LiveAcpClient × connectionStorePort', () => {
       onSessionDeleted: () => {},
       ...wireSwitchHandlers(port),
     });
-    await acpClient.connect(new StreamTransport(clientStream), '/tmp/project');
+    await acpClient.connect(new StreamTransport(clientStream), '/tmp/project', { intent: 'new-session' });
 
     await acpClient.loadSession('B', '/tmp/project');
     await acpClient.loadSession('A', '/tmp/project'); // revisit — must not duplicate
@@ -2259,7 +2278,7 @@ describe('LiveAcpClient × connectionStorePort', () => {
       onSessionDeleted: () => {},
       ...wireSwitchHandlers(port),
     });
-    await acpClient.connect(new StreamTransport(clientStream), '/tmp/project');
+    await acpClient.connect(new StreamTransport(clientStream), '/tmp/project', { intent: 'new-session' });
     port.update({ sessionUpdate: 'user_message', content: [{ type: 'text', text: 'original turn' }] });
     const before = usePanda.getState().connections['live']!.docs['A']!;
 
@@ -2425,10 +2444,10 @@ describe('LiveAcpClient × connectionStorePort', () => {
       onSessionSwitchCommit: () => {},
       onSessionSwitchRollback: () => {},
     });
-    const era1 = acpClient.connect(new StreamTransport(era1Client), '/tmp/project');
+    const era1 = acpClient.connect(new StreamTransport(era1Client), '/tmp/project', { intent: 'new-session' });
     await waitFor(() => era1InitSeen);
 
-    // Era 2: a plain reconnect on a second server — it wins the race.
+    // Era 2: an explicit new-session connection on a second server wins.
     const { clientStream: era2Client, serverStream: era2Server } = streamPair();
     agent({ name: 'fake-agent-2' })
       .onRequest(methods.agent.initialize, () => ({
@@ -2438,7 +2457,7 @@ describe('LiveAcpClient × connectionStorePort', () => {
       }))
       .onRequest(methods.agent.session.new, () => ({ sessionId: 's-3' }))
       .connect(era2Server);
-    await acpClient.connect(new StreamTransport(era2Client), '/tmp/project');
+    await acpClient.connect(new StreamTransport(era2Client), '/tmp/project', { intent: 'new-session' });
 
     releaseEra1(); // era 1's initialize finally resolves — superseded
     await era1;
@@ -2688,7 +2707,7 @@ describe('LiveAcpClient × connectionStorePort', () => {
       onSessionDeleted: () => {},
       ...switchWiring,
     });
-    await acpClient.connect(new StreamTransport(era1Client), '/tmp/project');
+    await acpClient.connect(new StreamTransport(era1Client), '/tmp/project', { intent: 'new-session' });
     port.update({ sessionUpdate: 'user_message', content: [{ type: 'text', text: 'era-1 turn' }] });
     const era1Doc = usePanda.getState().connections['live']!.docs['A']!;
 
@@ -2708,7 +2727,7 @@ describe('LiveAcpClient × connectionStorePort', () => {
       }))
       .onRequest(methods.agent.session.new, () => ({ sessionId: 'C' }))
       .connect(era2Server);
-    await acpClient.connect(new StreamTransport(era2Client), '/tmp/project');
+    await acpClient.connect(new StreamTransport(era2Client), '/tmp/project', { intent: 'new-session' });
     await switching;
     era1ServerConnection.close();
 
@@ -2751,12 +2770,13 @@ describe('LiveAcpClient v1 authentication', () => {
     h.closeAll();
   });
 
-  it('a proactive authenticate settles onAuthenticated with a fresh session (#90)', async () => {
-    const h = await setup({ authMethods: AUTH_METHODS, newSessionIds: ['s-1', 's-2'] });
+  it('a proactive authenticate on a sessionless link does not create a session (#90, #250)', async () => {
+    const h = await setup({ authMethods: AUTH_METHODS, connectOnly: true });
     await h.acpClient.authenticate('oauth-github');
     expect(h.agentState.authenticateRequests).toEqual(['oauth-github']);
     expect(h.authedMethodIds).toEqual(['oauth-github']);
-    expect(h.sessionIds.at(-1)).toBe('s-2'); // 认证后重建会话
+    expect(h.agentState.newSessionParams).toEqual([]);
+    expect(h.sessionIds).toEqual([]);
     h.closeAll();
   });
 
@@ -2847,7 +2867,7 @@ describe('LiveAcpClient v1 authentication', () => {
     h.acpClient.resolveElicitation('elicit-relogin', { outcome: 'declined' });
     await authenticating;
     expect(h.agentState.authenticateRequests).toEqual(['oauth-github']);
-    expect(h.sessionIds.at(-1)).toBe('s-2'); // session re-established
+    expect(h.sessionIds).toEqual(['s-1']); // proactive re-login keeps the live session
     expect(h.disconnected).toEqual([]); // the old session survived the flow
     h.closeAll();
   });

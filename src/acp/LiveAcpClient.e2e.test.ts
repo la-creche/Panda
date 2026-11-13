@@ -214,7 +214,11 @@ describe.skipIf(!hasAgentDeps)('LiveAcpClient × deepagents 测试 agent(e2e)', 
       onSessionSwitchRollback: () => {},
     };
     acpClient = new LiveAcpClient(handlers);
-    await acpClient.connect(new StreamTransport(createWebSocketStream(`ws://127.0.0.1:${port}/acp`)), '/tmp/project');
+    await acpClient.connect(
+      new StreamTransport(createWebSocketStream(`ws://127.0.0.1:${port}/acp`)),
+      '/tmp/project',
+      { intent: 'new-session' },
+    );
   }, 180_000);
 
   afterAll(async () => {

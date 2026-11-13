@@ -355,6 +355,7 @@ function wireHandlers(entry: LiveConnection) {
       entry.pendingProfile = null;
     },
     onSessionId: (sessionId: string, cwd: string) => port.adoptSession(sessionId, cwd),
+    onSessionUnavailable: () => port.detachSession(),
     onSessionModes: (modes: AcpSessionModeState | null) =>
       writeUpdate({ sessionUpdate: 'modes_initialized', modes }),
     onSessionConfigOptions: (options: AcpConfigOption[] | null) =>
@@ -564,7 +565,11 @@ function abandonStagedSwitch(entry: LiveConnection, where: string): void {
 // Public manager surface
 // ---------------------------------------------------------------------------
 
-export type LiveConnectOptions = { resume?: boolean; profileId?: string | null };
+export type LiveConnectOptions = {
+  resume?: boolean;
+  profileId?: string | null;
+  sessionIntent?: 'new-session';
+};
 
 /**
  * Connects (or reconnects) one connection slot. Connecting an already-live
@@ -624,6 +629,7 @@ export async function connectLiveConnection(
   const resumeSessionId = opts?.resume
     ? usePanda.getState().connections[connectionId]?.connection.sessionId ?? null
     : null;
+  if (!resumeSessionId) entry.port.detachSession();
   usePanda.getState().setMode('live');
   entry.port.setConnection({
     status: 'connecting',
@@ -663,7 +669,11 @@ export async function connectLiveConnection(
   await entry.client.connect(
     transport,
     cwd,
-    resumeSessionId ? { sessionId: resumeSessionId } : undefined,
+    resumeSessionId
+      ? { sessionId: resumeSessionId }
+      : opts?.sessionIntent === 'new-session'
+        ? { intent: 'new-session' }
+        : undefined,
   );
 }
 
