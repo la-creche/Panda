@@ -28,15 +28,15 @@ jobs:
           - os: windows-latest # NSIS setup.exe + portable exe zip
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # 与 ci.yml 同一约束:仓库无 packageManager 字段,须显式指定版本
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
         with:
           version: 11
 
       # e2e 依赖 node:sqlite 无 flag 可用,固着 Node 24(与本地开发一致)
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           cache: pnpm
@@ -49,8 +49,8 @@ jobs:
       - run: pnpm test
       - run: pnpm --filter panda-test-agent test
 
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: desktop/src-tauri
 
@@ -83,7 +83,7 @@ jobs:
           Compress-Archive -Path "desktop/src-tauri/target/release/panda-desktop.exe" -DestinationPath "$dir/Panda_${ver}_x64-portable.zip"
           "ARTIFACTS=$dir" >> $env:GITHUB_ENV
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: panda-desktop-${{ runner.os }}
           path: ${{ env.ARTIFACTS }}/*
@@ -91,6 +91,6 @@ jobs:
 
       - name: Attach release assets (tag builds)
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
         with:
           files: ${{ env.ARTIFACTS }}/*
