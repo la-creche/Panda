@@ -15,6 +15,7 @@ import {
 } from '@agentclientprotocol/sdk';
 import {
   CONTROL_REQUEST_TIMEOUT_MS,
+  SESSION_LOAD_FIRST_UPDATE_TIMEOUT_MS,
   SESSION_LOAD_HARD_TIMEOUT_MS,
   LiveAcpClient,
   type LiveClientHandlers,
@@ -1758,7 +1759,7 @@ describe('LiveAcpClient', () => {
     }
   });
 
-  it('reports a timeout disconnect when session/load produces no replay progress', async () => {
+  it('uses the longer startup budget until session/load produces its first replay update', async () => {
     vi.useFakeTimers();
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
@@ -1766,25 +1767,59 @@ describe('LiveAcpClient', () => {
       const h = await setup({ capabilities: { loadSession: true }, beforeLoad: never });
       const switching = h.acpClient.loadSession('s-2', '/tmp/project');
       await vi.advanceTimersByTimeAsync(0);
+      expect(infoSpy).toHaveBeenCalledWith('[panda/acp] session/load replay started', {
+        sessionId: 's-2',
+        startupTimeoutMs: SESSION_LOAD_FIRST_UPDATE_TIMEOUT_MS,
+        idleTimeoutMs: CONTROL_REQUEST_TIMEOUT_MS,
+        hardTimeoutMs: SESSION_LOAD_HARD_TIMEOUT_MS,
+      });
       await vi.advanceTimersByTimeAsync(CONTROL_REQUEST_TIMEOUT_MS + 100);
+      expect(h.disconnected).toEqual([]);
+      await vi.advanceTimersByTimeAsync(
+        SESSION_LOAD_FIRST_UPDATE_TIMEOUT_MS - CONTROL_REQUEST_TIMEOUT_MS,
+      );
       await switching;
-      expect(h.disconnected).toEqual(['agent session/load timed out after 30s']);
+      expect(h.disconnected).toEqual(['agent session/load timed out after 60s']);
       expect(infoSpy).toHaveBeenCalledWith(
         '[panda/acp] session/load replay finished',
         expect.objectContaining({
           sessionId: 's-2',
           outcome: 'timeout',
-          elapsedMs: CONTROL_REQUEST_TIMEOUT_MS,
+          elapsedMs: SESSION_LOAD_FIRST_UPDATE_TIMEOUT_MS,
           firstUpdateMs: null,
-          idleMs: CONTROL_REQUEST_TIMEOUT_MS,
+          idleMs: SESSION_LOAD_FIRST_UPDATE_TIMEOUT_MS,
           updateCount: 0,
           updateKinds: {},
-          error: 'session/load timed out after 30s',
+          error: 'session/load timed out after 60s',
         }),
       );
       h.closeAll();
     } finally {
       infoSpy.mockRestore();
+      errorSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('switches to the 30-second idle budget after the first replay update', async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const h = await setup({ capabilities: { loadSession: true }, beforeLoad: never });
+      const switching = h.acpClient.loadSession('s-2', '/tmp/project');
+      await vi.advanceTimersByTimeAsync(SESSION_LOAD_FIRST_UPDATE_TIMEOUT_MS - 1_000);
+      await h.agentState.notifyLoadUpdate?.({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'started' },
+      });
+      await vi.advanceTimersByTimeAsync(CONTROL_REQUEST_TIMEOUT_MS - 1_000);
+      expect(h.disconnected).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(1_100);
+      await switching;
+      expect(h.disconnected).toEqual(['agent session/load timed out after 30s']);
+      h.closeAll();
+    } finally {
       errorSpy.mockRestore();
       vi.useRealTimers();
     }
@@ -1829,14 +1864,14 @@ describe('LiveAcpClient', () => {
       const h = await setup({ capabilities: { loadSession: true }, beforeLoad: never });
       const switching = h.acpClient.loadSession('s-2', '/tmp/project');
       await vi.advanceTimersByTimeAsync(0);
-      await vi.advanceTimersByTimeAsync(CONTROL_REQUEST_TIMEOUT_MS - 1_000);
+      await vi.advanceTimersByTimeAsync(SESSION_LOAD_FIRST_UPDATE_TIMEOUT_MS - 1_000);
       await h.agentState.notifyLoadUpdate?.(
         { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'wrong session' } },
         's-1',
       );
       await vi.advanceTimersByTimeAsync(1_100);
       await switching;
-      expect(h.disconnected).toEqual(['agent session/load timed out after 30s']);
+      expect(h.disconnected).toEqual(['agent session/load timed out after 60s']);
       h.closeAll();
     } finally {
       warnSpy.mockRestore();

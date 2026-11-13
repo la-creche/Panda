@@ -202,6 +202,14 @@ const CLIENT_INFO = { name: 'panda', title: 'Panda', version: '0.1.0' } as const
 export const CONTROL_REQUEST_TIMEOUT_MS = 30_000;
 
 /**
+ * A cold session restore can spend longer than one ordinary control-plane
+ * budget preparing history before it can emit the first replay update
+ * (#253). Once replay starts, the tighter 30s inactivity budget above takes
+ * over; the hard ceiling below still bounds the whole operation.
+ */
+export const SESSION_LOAD_FIRST_UPDATE_TIMEOUT_MS = 60_000;
+
+/**
  * A progressing history replay may legitimately run longer than one control
  * request budget, but it must still finish eventually. Correctly routed
  * session/update notifications reset the 30s idle timer; this ceiling does
@@ -1170,9 +1178,11 @@ export class LiveAcpClient {
   }
 
   /**
-   * Bounds session/load by inactivity as well as total wall time. Replays are
-   * streamed before the response, so treating every load as a fixed 30s RPC
-   * disconnects healthy agents while they are still sending history.
+   * Bounds session/load in three phases: a cold-start budget before the first
+   * replay update, a tighter inactivity budget once replay is flowing, and a
+   * fixed total wall-time ceiling. Replays are streamed before the response,
+   * so treating every load as a fixed 30s RPC disconnects healthy agents
+   * while they are preparing or still sending history.
    */
   private async loadRequest<T>(sessionId: string, request: () => Promise<T>): Promise<T> {
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1192,6 +1202,7 @@ export class LiveAcpClient {
     this.loadDiagnostics = diagnostics;
     console.info('[panda/acp] session/load replay started', {
       sessionId,
+      startupTimeoutMs: SESSION_LOAD_FIRST_UPDATE_TIMEOUT_MS,
       idleTimeoutMs: CONTROL_REQUEST_TIMEOUT_MS,
       hardTimeoutMs: SESSION_LOAD_HARD_TIMEOUT_MS,
     });
@@ -1199,16 +1210,17 @@ export class LiveAcpClient {
     const timeout = new Promise<never>((_, reject) => {
       rejectTimeout = reject;
     });
-    const resetIdle = () => {
+    const armInactivity = (timeoutMs: number) => {
       clearTimeout(idleTimer);
       idleTimer = setTimeout(
-        () => rejectTimeout(new ControlRequestTimeoutError('session/load', CONTROL_REQUEST_TIMEOUT_MS)),
-        CONTROL_REQUEST_TIMEOUT_MS,
+        () => rejectTimeout(new ControlRequestTimeoutError('session/load', timeoutMs)),
+        timeoutMs,
       );
     };
+    const resetIdle = () => armInactivity(CONTROL_REQUEST_TIMEOUT_MS);
 
     this.loadProgress = resetIdle;
-    resetIdle();
+    armInactivity(SESSION_LOAD_FIRST_UPDATE_TIMEOUT_MS);
     hardTimer = setTimeout(
       () => rejectTimeout(new ControlRequestTimeoutError('session/load', SESSION_LOAD_HARD_TIMEOUT_MS)),
       SESSION_LOAD_HARD_TIMEOUT_MS,
