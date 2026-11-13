@@ -149,6 +149,15 @@
   color: var(--color-faint);
 }
 
+/* iOS WebKit zooms a focused form control whose text is below 16px. Limit
+ * the exception to touch-oriented devices; max() preserves larger user font
+ * settings, and pinch zoom stays available because the viewport is unchanged. */
+@media (pointer: coarse) {
+  .composer-input {
+    font-size: max(16px, var(--panda-size-content));
+  }
+}
+
 .composer-hint {
   margin-top: 8px; /* mt-2 */
   text-align: center;
