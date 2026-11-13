@@ -1,0 +1,13 @@
+.git
+.github
+.playwright-mcp
+node_modules
+dist
+public/material-icons
+desktop/src-tauri/target
+desktop/src-tauri/gen
+test-agent/.env
+test-agent/.state*
+test-agent/sandbox*
+*.local
+.DS_Store

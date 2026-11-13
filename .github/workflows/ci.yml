@@ -39,3 +39,109 @@ jobs:
       # 自动启用;CI 无 .env,确定性剧本模型,无真实模型调用
       - run: pnpm test
       - run: pnpm --filter panda-test-agent test
+
+  # Keep pull requests fast: the image is built only after main's full suite
+  # passes. A green image gets one immutable panda-vX.Y.Z tag; a failed or
+  # superseded run tags nothing. External deployers can watch that namespace.
+  container-release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Plan release tag
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          tip="$(git rev-parse origin/main)"
+          if [[ "$GITHUB_SHA" != "$tip" ]]; then
+            echo "Current main is $tip; $GITHUB_SHA was superseded, so it gets no tag."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          existing="$(git tag --points-at "$GITHUB_SHA" --list 'panda-v*' | sort -V | tail -n 1)"
+          if [[ -n "$existing" ]]; then
+            tag="$existing"
+            create=false
+          else
+            base="$(node -p "require('./package.json').version")"
+            mapfile -t tags < <(git tag --list 'panda-v*')
+            tag="$(node scripts/next-release-tag.mjs "$base" "${tags[@]}")"
+            create=true
+          fi
+
+          version="${tag#panda-v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::planned tag is not panda-vX.Y.Z: $tag"
+            exit 1
+          fi
+          {
+            echo "build=true"
+            echo "create=$create"
+            echo "tag=$tag"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build container
+        if: steps.plan.outputs.build == 'true'
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: >-
+          docker build
+          --build-arg "PANDA_VERSION=$VERSION"
+          --build-arg "VCS_REF=$GITHUB_SHA"
+          --tag "panda:$TAG"
+          .
+
+      - name: Smoke-test container
+        if: steps.plan.outputs.build == 'true'
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          container="$(docker run --detach --rm "panda:$TAG")"
+          trap 'docker stop "$container" >/dev/null' EXIT
+
+          for attempt in {1..20}; do
+            if [[ "$(docker exec "$container" wget -q -O - http://127.0.0.1:8080/healthz 2>/dev/null || true)" == "ok" ]]; then
+              break
+            fi
+            if [[ "$attempt" == 20 ]]; then
+              docker logs "$container"
+              echo "::error::container did not become healthy"
+              exit 1
+            fi
+            sleep 1
+          done
+
+          docker exec "$container" wget -q -O /tmp/index.html http://127.0.0.1:8080/
+          docker exec "$container" test -s /tmp/index.html
+          docker exec "$container" grep -R -q -- "$VERSION" /usr/share/nginx/html/assets
+          test "$(docker image inspect --format '{{.Config.User}}' "panda:$TAG")" = "101"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "panda:$TAG")" = "$VERSION"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "panda:$TAG")" = "$GITHUB_SHA"
+
+      - name: Create release tag
+        if: steps.plan.outputs.create == 'true'
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag --annotate "$TAG" "$GITHUB_SHA" --message "Panda $VERSION"
+          git push origin "refs/tags/$TAG"
+          echo "Created $TAG at $GITHUB_SHA after the container smoke test." >> "$GITHUB_STEP_SUMMARY"
