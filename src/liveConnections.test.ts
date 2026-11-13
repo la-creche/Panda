@@ -278,6 +278,147 @@ describe('row-level action routing (bug hunt #1/#5)', () => {
   });
 });
 
+describe('bounded automatic reconnect (issue #252)', () => {
+  it('resumes an established session after the first one-second delay', async () => {
+    vi.useFakeTimers();
+    try {
+      const stubs = installStubClients();
+      await connectedStub('agent-a', stubs, 's-a');
+
+      stubs[0]!.handlers.onDisconnected('network dropped');
+      await vi.advanceTimersByTimeAsync(999);
+      expect(stubs[0]!.client.connect).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(stubs[0]!.client.connect).toHaveBeenCalledTimes(2);
+      expect(stubs[0]!.client.connect).toHaveBeenLastCalledWith(
+        expect.anything(),
+        '/agent-a',
+        { sessionId: 's-a' },
+      );
+      expect(usePanda.getState().connections['agent-a']!.connection.sessionId).toBe('s-a');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('backs off for 1, 2, 4 and 8 seconds, then leaves the error settled', async () => {
+    vi.useFakeTimers();
+    try {
+      const stubs = installStubClients();
+      await connectedStub('agent-a', stubs, 's-a');
+      const client = stubs[0]!.client;
+
+      stubs[0]!.handlers.onDisconnected('drop-0');
+      for (const [attempt, delay] of [1_000, 2_000, 4_000, 8_000].entries()) {
+        await vi.advanceTimersByTimeAsync(delay);
+        expect(client.connect).toHaveBeenCalledTimes(attempt + 2);
+        stubs[0]!.handlers.onDisconnected(`drop-${attempt + 1}`);
+      }
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(client.connect).toHaveBeenCalledTimes(5);
+      expect(usePanda.getState().connections['agent-a']!.connection.status).toBe('error');
+      expect(usePanda.getState().connections['agent-a']!.connection.error).toBe('drop-4');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('resets the backoff after a successful automatic reconnect', async () => {
+    vi.useFakeTimers();
+    try {
+      const stubs = installStubClients();
+      await connectedStub('agent-a', stubs, 's-a');
+
+      stubs[0]!.handlers.onDisconnected('first drop');
+      await vi.advanceTimersByTimeAsync(1_000);
+      stubs[0]!.handlers.onConnected({ agentName: 'agent-a', protocolVersion: 1 });
+
+      stubs[0]!.handlers.onDisconnected('second drop');
+      await vi.advanceTimersByTimeAsync(999);
+      expect(stubs[0]!.client.connect).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(stubs[0]!.client.connect).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels a pending retry when the user disconnects', async () => {
+    vi.useFakeTimers();
+    try {
+      const stubs = installStubClients();
+      await connectedStub('agent-a', stubs, 's-a');
+
+      stubs[0]!.handlers.onDisconnected('network dropped');
+      disconnectLiveConnection('agent-a');
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(stubs[0]!.client.connect).toHaveBeenCalledTimes(1);
+      expect(usePanda.getState().connections['agent-a']!.connection.status).toBe('disconnected');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('lets a manual reconnect replace the pending retry without restarting the loop', async () => {
+    vi.useFakeTimers();
+    try {
+      const stubs = installStubClients();
+      await connectedStub('agent-a', stubs, 's-a');
+
+      stubs[0]!.handlers.onDisconnected('network dropped');
+      reconnectLiveConnection('agent-a', { resume: true });
+      expect(stubs[0]!.client.connect).toHaveBeenCalledTimes(2);
+
+      stubs[0]!.handlers.onDisconnected('manual reconnect failed');
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(stubs[0]!.client.connect).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not resurrect a removed connection from a stale timer', async () => {
+    vi.useFakeTimers();
+    try {
+      const stubs = installStubClients();
+      await connectedStub('agent-a', stubs, 's-a');
+
+      stubs[0]!.handlers.onDisconnected('network dropped');
+      removeLiveConnection('agent-a');
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(stubs[0]!.client.connect).toHaveBeenCalledTimes(1);
+      expect(usePanda.getState().connections['agent-a']).toBeUndefined();
+      expect(__liveConnectionIds()).not.toContain('agent-a');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not retry an initial connection failure', async () => {
+    vi.useFakeTimers();
+    try {
+      const stubs = installStubClients();
+      await connectLiveConnection(
+        'agent-a',
+        { kind: 'websocket', url: 'ws://agent-a/acp' },
+        { kind: 'local-directory', path: '/agent-a' },
+      );
+
+      stubs[0]!.handlers.onDisconnected('connection refused');
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(stubs[0]!.client.connect).toHaveBeenCalledTimes(1);
+      expect(usePanda.getState().connections['agent-a']!.connection.status).toBe('error');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('ignored reconnects answer with a toast (#238)', () => {
   it('a direct slot with no remembered target toasts the recovery instead of dead-clicking', () => {
     const notices: UserNotice[] = [];

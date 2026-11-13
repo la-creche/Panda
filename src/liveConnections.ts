@@ -50,6 +50,7 @@ const URL_KEY = 'panda.acp.url';
 const CWD_KEY = 'panda.acp.cwd';
 const SESSIONS_KEY_PREFIX = 'panda.sessions:';
 const PERSIST_LIMIT = 50;
+const AUTO_RECONNECT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
 
 /** 临时直连 ids carry this prefix; everything else is a profile id. */
 export const DIRECT_CONNECTION_PREFIX = 'direct:';
@@ -234,6 +235,19 @@ type LiveConnection = {
    * from the profile).
    */
   lastTarget: LiveTarget | null;
+  /**
+   * Bounded recovery for a link that was already usable (#252). The active
+   * bit spans an in-flight automatic dial; the timer covers the wait before
+   * it. A manual lifecycle action cancels both by clearing active, while the
+   * client's era guard retires any already-running dial.
+   */
+  autoReconnect: {
+    active: boolean;
+    attempt: number;
+    timer: ReturnType<typeof setTimeout> | null;
+  };
+  /** True only after this connection era reached onConnected. */
+  established: boolean;
 };
 
 const liveConnections = new Map<string, LiveConnection>();
@@ -295,6 +309,8 @@ function ensureEntry(connectionId: string): LiveConnection {
     pendingProfile: null,
     profileId: null,
     lastTarget: null,
+    autoReconnect: { active: false, attempt: 0, timer: null },
+    established: false,
   };
   const factory =
     clientFactories.get(connectionId) ??
@@ -318,6 +334,58 @@ function ensureEntry(connectionId: string): LiveConnection {
   return entry;
 }
 
+function cancelAutomaticReconnect(entry: LiveConnection): void {
+  if (entry.autoReconnect.timer !== null) clearTimeout(entry.autoReconnect.timer);
+  entry.autoReconnect = { active: false, attempt: 0, timer: null };
+}
+
+/**
+ * Schedules the next bounded reconnect (#252). Attempts are counted when
+ * scheduled, so a failed automatic dial can call this again for the next
+ * delay; exhaustion leaves the existing error state and manual recovery UI.
+ */
+function scheduleAutomaticReconnect(entry: LiveConnection): void {
+  if (entry.autoReconnect.timer !== null) return;
+  const delay = AUTO_RECONNECT_DELAYS_MS[entry.autoReconnect.attempt];
+  if (delay === undefined) {
+    console.info(`[panda/acp:${entry.connectionId}] automatic reconnect exhausted`);
+    entry.autoReconnect.active = false;
+    return;
+  }
+  const attempt = entry.autoReconnect.attempt + 1;
+  entry.autoReconnect.active = true;
+  entry.autoReconnect.attempt = attempt;
+  console.info(
+    `[panda/acp:${entry.connectionId}] automatic reconnect ${attempt}/${AUTO_RECONNECT_DELAYS_MS.length} in ${delay}ms`,
+  );
+  entry.autoReconnect.timer = setTimeout(() => {
+    entry.autoReconnect.timer = null;
+    // Removal replaces the map identity; a stale timer must never recreate
+    // the slot. Manual actions clear active before retiring the client era.
+    if (liveConnections.get(entry.connectionId) !== entry || !entry.autoReconnect.active) return;
+    const slot = usePanda.getState().connections[entry.connectionId];
+    const target = entry.lastTarget;
+    const workspace = slot?.connection.cwd ? cwdToWorkspace(slot.connection.cwd) : null;
+    if (!slot || !target || !workspace) {
+      console.warn(
+        `[panda/acp:${entry.connectionId}] automatic reconnect cancelled: target or workspace was removed`,
+      );
+      cancelAutomaticReconnect(entry);
+      return;
+    }
+    void connectLiveConnectionInternal(
+      entry.connectionId,
+      target,
+      workspace,
+      {
+        resume: slot.connection.sessionId !== null,
+        profileId: entry.profileId,
+      },
+      'automatic',
+    );
+  }, delay);
+}
+
 function wireHandlers(entry: LiveConnection) {
   const { connectionId, port } = entry;
   const writeUpdate = (update: AcpSessionUpdate): void => {
@@ -331,6 +399,8 @@ function wireHandlers(entry: LiveConnection) {
   return {
     onUpdate: writeUpdate,
     onConnected: (info: { agentName: string; protocolVersion: number }) => {
+      entry.established = true;
+      cancelAutomaticReconnect(entry);
       port.setConnection({
         status: 'connected',
         agentName: info.agentName,
@@ -364,6 +434,8 @@ function wireHandlers(entry: LiveConnection) {
     // "reconnect and resume"; a clean user disconnect clears it. Either way
     // a failed connect must not write its edits back into the profile.
     onDisconnected: (reason: string | null) => {
+      const shouldReconnect = reason !== null && (entry.established || entry.autoReconnect.active);
+      entry.established = false;
       entry.pendingProfile = null;
       // A closed connection can no longer settle a selection (issue #19):
       // any in-flight switch's late commit stops moving the UI pointer, and
@@ -374,6 +446,8 @@ function wireHandlers(entry: LiveConnection) {
           ? { status: 'error', error: reason, authMethods: null, availableAuthMethods: [], authedMethodId: null, authElicitation: null }
           : { status: 'disconnected', error: null, sessionId: null, authMethods: null, availableAuthMethods: [], authedMethodId: null, authElicitation: null },
       );
+      if (shouldReconnect) scheduleAutomaticReconnect(entry);
+      else if (reason === null) cancelAutomaticReconnect(entry);
     },
     // v1 auth_required: the session waits for login; the auth card takes over
     // the main view until a method succeeds (or the failure settles).
@@ -592,6 +666,16 @@ export async function connectLiveConnection(
   workspace: Workspace,
   opts?: LiveConnectOptions,
 ): Promise<void> {
+  return connectLiveConnectionInternal(connectionId, target, workspace, opts, 'manual');
+}
+
+async function connectLiveConnectionInternal(
+  connectionId: string,
+  target: LiveTarget,
+  workspace: Workspace,
+  opts: LiveConnectOptions | undefined,
+  origin: 'manual' | 'automatic',
+): Promise<void> {
   const normalizedTarget: LiveTarget =
     target.kind === 'websocket'
       ? { kind: 'websocket', url: target.url.trim() }
@@ -606,20 +690,24 @@ export async function connectLiveConnection(
     console.warn(`[panda/acp:${connectionId}] connect ignored: an endpoint and a workspace path are required`);
     return;
   }
+  const entry = ensureEntry(connectionId);
+  if (origin === 'manual') {
+    cancelAutomaticReconnect(entry);
+    entry.established = false;
+  }
   const stdioFactory = normalizedTarget.kind === 'stdio' ? getStdioTransportFactory() : null;
   if (normalizedTarget.kind === 'stdio' && !stdioFactory) {
     // §5.2 fail-fast: this host cannot spawn. Surfaced as a connect failure —
     // the same shape the client reports for refused sockets.
-    const entry = ensureEntry(connectionId);
     usePanda.getState().ensureConnection(connectionId);
     entry.port.setConnection({ status: 'error', url: endpoint, cwd, error: t('acp.stdioHostMissing') });
+    if (origin === 'automatic') scheduleAutomaticReconnect(entry);
     return;
   }
   // The custom-address form prefills from the last WEBSOCKET endpoint only —
   // a stdio command must never leak into it (issue #121).
   if (normalizedTarget.kind === 'websocket') remember(URL_KEY, normalizedTarget.url);
   remember(CWD_KEY, cwd);
-  const entry = ensureEntry(connectionId);
   entry.lastTarget = normalizedTarget;
   entry.profileId = opts?.profileId ?? null;
   entry.pendingProfile = opts?.profileId
@@ -885,6 +973,8 @@ export function disconnectLiveConnection(connectionId: string): void {
     console.warn(`[panda/acp] disconnect ignored: no live connection "${connectionId}"`);
     return;
   }
+  cancelAutomaticReconnect(entry);
+  entry.established = false;
   entry.client.disconnect();
   if (isDirectConnectionId(connectionId)) {
     removeLiveConnection(connectionId);
@@ -902,6 +992,8 @@ export function removeLiveConnection(connectionId: string): void {
   if (entry) {
     // The disconnect handlers (abandon switch, status settle) run into the
     // slot first, then closeConnection drops everything they wrote.
+    cancelAutomaticReconnect(entry);
+    entry.established = false;
     entry.client.disconnect();
     liveConnections.delete(connectionId);
   }
@@ -1149,6 +1241,8 @@ export function __setDefaultClientFactory(factory: LiveClientFactory | null): vo
 /** For tests: reset the manager between cases (drops every entry). */
 export function __resetLiveConnections(): void {
   for (const entry of [...liveConnections.values()]) {
+    cancelAutomaticReconnect(entry);
+    entry.established = false;
     entry.client.disconnect();
   }
   liveConnections.clear();
