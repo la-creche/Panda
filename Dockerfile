@@ -22,7 +22,11 @@ ARG PANDA_VERSION=""
 ENV PANDA_VERSION=${PANDA_VERSION}
 RUN pnpm build
 
-FROM nginxinc/nginx-unprivileged:1.29-alpine@sha256:0c79d56aee561a1d81c63f00eee5fb5fe29279560cdc55e91425133104c7fbe6
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+
+RUN apk add --no-cache nginx=1.30.6-r0 \
+    && mkdir -p /run/nginx /var/cache/nginx /var/lib/nginx/tmp /var/log/nginx \
+    && chown -R 101:101 /run/nginx /var/cache/nginx /var/lib/nginx /var/log/nginx
 
 ARG PANDA_VERSION=""
 ARG VCS_REF=""
@@ -33,11 +37,13 @@ LABEL org.opencontainers.image.title="Panda" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.licenses="Apache-2.0"
 
-COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
+COPY docker/nginx.conf /etc/nginx/http.d/default.conf
 COPY --from=build --chown=101:101 /app/dist /usr/share/nginx/html
 
 USER 101
-EXPOSE 8080
+EXPOSE 8530
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1
+  CMD wget -q -O /dev/null http://127.0.0.1:8530/healthz || exit 1
+
+CMD ["nginx", "-g", "daemon off;"]

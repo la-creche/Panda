@@ -115,7 +115,7 @@ jobs:
           trap 'docker stop "$container" >/dev/null' EXIT
 
           for attempt in {1..20}; do
-            if [[ "$(docker exec "$container" wget -q -O - http://127.0.0.1:8080/healthz 2>/dev/null || true)" == "ok" ]]; then
+            if [[ "$(docker exec "$container" wget -q -O - http://127.0.0.1:8530/healthz 2>/dev/null || true)" == "ok" ]]; then
               break
             fi
             if [[ "$attempt" == 20 ]]; then
@@ -126,7 +126,7 @@ jobs:
             sleep 1
           done
 
-          docker exec "$container" wget -q -O /tmp/index.html http://127.0.0.1:8080/
+          docker exec "$container" wget -q -O /tmp/index.html http://127.0.0.1:8530/
           docker exec "$container" test -s /tmp/index.html
           docker exec "$container" grep -R -q -- "$VERSION" /usr/share/nginx/html/assets
           test "$(docker image inspect --format '{{.Config.User}}' "panda:$TAG")" = "101"

@@ -50,11 +50,11 @@ Pick by scenario — the desktop build connects stdio agents you develop; the we
   ```
 - **From source** — see [Development](#development).
 - **Self-hosted container** — build the repository's root `Dockerfile`, then
-  publish container port `8080`. `GET /healthz` is the health check endpoint:
+  publish container port `8530`. `GET /healthz` is the health check endpoint:
 
   ```sh
   docker build -t panda .
-  docker run --rm -p 8080:8080 panda
+  docker run --rm -p 8530:8530 panda
   ```
 
   On every successful `main` build, CI smoke-tests this image before creating
