@@ -22,14 +22,13 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          pattern='^(feat|fix|docs|refactor|perf|test|chore|ci|build)(\((ui|acp|desktop|test-agent|docs)\))?: .+( \(#[0-9]+\))+$'
+          pattern='^(feat|fix|docs|refactor|perf|test|chore|ci|build)(\((ui|acp|desktop|test-agent|docs)\))?: .+$'
           if [[ "$PR_TITLE" =~ $pattern ]]; then
             echo "OK: $PR_TITLE"
           else
-            echo "::error::PR title must match: <type>(<scope>): <imperative English subject> (#issue)"
+            echo "::error::PR title must match: <type>(<scope>): <imperative English subject>"
             echo "::error::types: feat fix docs refactor perf test chore ci build"
             echo "::error::scopes (optional): ui acp desktop test-agent docs"
-            echo "::error::trailing issue reference required, e.g. (#227)"
             echo "::error::got: $PR_TITLE"
             exit 1
           fi
