@@ -7,11 +7,12 @@ import react from '@vitejs/plugin-react';
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
   version: string;
 };
+const appVersion = process.env.PANDA_VERSION?.trim() || pkg.version;
 
 export default defineConfig({
   plugins: [react()],
   define: {
-    __APP_VERSION__: JSON.stringify(pkg.version),
+    __APP_VERSION__: JSON.stringify(appVersion),
   },
   server: {
     // The Tauri shell's devUrl pins 5173; a busy port must fail loudly

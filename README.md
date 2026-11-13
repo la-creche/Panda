@@ -49,6 +49,17 @@ Pick by scenario — the desktop build connects stdio agents you develop; the we
   xattr -cr /Applications/Panda.app
   ```
 - **From source** — see [Development](#development).
+- **Self-hosted container** — build the repository's root `Dockerfile`, then
+  publish container port `8530`. `GET /healthz` is the health check endpoint:
+
+  ```sh
+  docker build -t panda .
+  docker run --rm -p 8530:8530 panda
+  ```
+
+  On every successful `main` build, CI smoke-tests this image before creating
+  the next immutable `panda-vX.Y.Z` tag. Failed and superseded builds create no
+  tag, so deployment tools can safely watch that tag prefix.
 
 ## Features
 

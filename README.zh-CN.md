@@ -49,6 +49,17 @@
   xattr -cr /Applications/Panda.app
   ```
 - **从源码运行**——见[开发](#开发)。
+- **自托管容器**——构建仓库根目录的 `Dockerfile`,并发布容器的 `8530`
+  端口。健康检查端点为 `GET /healthz`:
+
+  ```sh
+  docker build -t panda .
+  docker run --rm -p 8530:8530 panda
+  ```
+
+  每次 `main` 构建成功后,CI 会先冒烟测试镜像,再创建下一个不可变的
+  `panda-vX.Y.Z` 标签。失败或已被后续提交取代的构建不会创建标签,部署工具
+  可以安全监听这个标签前缀。
 
 ## 功能
 
