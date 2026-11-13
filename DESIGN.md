@@ -267,7 +267,7 @@ inter`、`@fontsource-variable/jetbrains-mono`），无 CDN 依赖。
 
 | 档 | 变量（默认） | 角色 |
 | --- | --- | --- |
-| 内容 | `--panda-size-content`（14px） | 消息流全量（含工具行/diff/权限卡，流根 `.stream-root` 钉继承基准）+ 输入框文字 |
+| 内容 | `--panda-size-content`（14px） | 消息流全量（含工具行/diff/权限卡，流根 `.stream-root` 钉继承基准）+ 输入框文字（粗指针设备的消息输入框最小 16px，见例外清单） |
 | chrome | `--panda-size-chrome` = content − 1px（13px） | 侧栏行、连接面板、顶栏标题、控件标签 |
 | micro | `--panda-size-micro` = content − 3px（11px） | 状态栏、分组标签、meta/版本、提示、错误小字 |
 | 代码 | `--panda-size-code`（12px） | 代码块全家（fenced `pre` + 语言标签 + 裸 pre 兜底）、等宽 URL/diff hunk 头 |
@@ -280,7 +280,9 @@ inter`、`@fontsource-variable/jetbrains-mono`），无 CDN 依赖。
 content 档——Astryx 组件随旋钮等比缩放，不重演"半跟随像 bug"的教训。
 
 **例外清单**（有意不进档位）：侧栏品牌字 18px（#155 与 28px 徽章配平的
-拍板值）；ErrorBoundary 崩溃页内联字号（渲染在层叠之外）。
+拍板值）；粗指针设备的消息输入文字用
+`max(16px, var(--panda-size-content))`（#251，避免 iOS 聚焦时自动放大，同时
+保留用户设置的更大字号）；ErrorBoundary 崩溃页内联字号（渲染在层叠之外）。
 
 **归并记录（#171）**：原先散落的 12px 按角色分流——控件类（模式 pill、
 配置 select）归 chrome，mono 技术内容归代码档，提示/meta 归 micro；
