@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowUp, Paperclip, SlidersHorizontal, Square, X } from 'lucide-react';
+import { ArrowUp, ListPlus, Paperclip, Play, SlidersHorizontal, Square, X } from 'lucide-react';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import {
   buildPromptContent,
@@ -8,6 +8,7 @@ import {
   type ImageAttachment,
 } from '../attachments';
 import { draftForKey, useComposerDrafts } from '../composerDrafts';
+import { queueForKey, useMessageQueue, type QueuedMessage } from '../messageQueue';
 import type {
   AcpAvailableCommand,
   AcpConfigOption,
@@ -51,7 +52,39 @@ export function imageHintState(canAttachImages: boolean | undefined): 'available
   return canAttachImages ? 'available' : 'unavailable';
 }
 
-export function Composer({ onSend, disabled, inputLocked, hint, canAttachImages, canStop, onStop, modes, onSetMode, commands, configOptions, onSetConfigOption, sessionKey }: {
+/**
+ * One line of a queued message for the queue strip: its text, flattened,
+ * plus an image count when it carries images.
+ */
+export function queuedPreview(
+  message: QueuedMessage,
+  imagesLabel: (count: number) => string,
+): string {
+  const text = message.content
+    .flatMap((block) => (block.type === 'text' ? [block.text] : []))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const images = message.content.filter((block) => block.type === 'image').length;
+  if (images === 0) return text;
+  return text === '' ? imagesLabel(images) : `${text} · ${imagesLabel(images)}`;
+}
+
+/**
+ * What Enter (or the trailing button) does with the composer's content:
+ * send it now, hold it in the queue behind the running turn, or nothing.
+ */
+export function submitAction(input: {
+  hasContent: boolean;
+  disabled: boolean;
+  canQueue: boolean;
+}): 'send' | 'queue' | 'none' {
+  if (!input.hasContent) return 'none';
+  if (!input.disabled) return 'send';
+  return input.canQueue ? 'queue' : 'none';
+}
+
+export function Composer({ onSend, disabled, inputLocked, canQueue, hint, canAttachImages, canStop, onStop, modes, onSetMode, commands, configOptions, onSetConfigOption, sessionKey }: {
   onSend: (content: AcpContentBlock[]) => void;
   /** Sends and popovers are closed (turn running, link down, switching). */
   disabled: boolean;
@@ -59,6 +92,9 @@ export function Composer({ onSend, disabled, inputLocked, hint, canAttachImages,
    * (#216): while a permission waits the composer stays writable so the
    * next message can be drafted, sending is still held back by disabled. */
   inputLocked: boolean;
+  /** A turn is running or awaiting approval: Enter queues the message, and
+   * the queue sends it when the turn ends (messageQueue.ts). */
+  canQueue: boolean;
   hint?: string;
   /**
    * Image attachment verdict for the foreground agent (#214): true/false
@@ -86,6 +122,7 @@ export function Composer({ onSend, disabled, inputLocked, hint, canAttachImages,
   const { t } = useI18n();
   const draft = useComposerDrafts((s) => draftForKey(s, sessionKey));
   const { value, attachments, attachmentError } = draft;
+  const queue = useMessageQueue((s) => queueForKey(s, sessionKey));
   const setDraft = (patch: Partial<{ value: string; attachments: ImageAttachment[]; attachmentError: string | null }>) =>
     useComposerDrafts.getState().setDraft(sessionKey, patch);
   // Function-form attachment update reads through the store (not the render
@@ -111,7 +148,9 @@ export function Composer({ onSend, disabled, inputLocked, hint, canAttachImages,
   useEffect(closeConfig, [sessionKey]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const promptContent = buildPromptContent(attachments, value);
-  const canSend = promptContent.length > 0 && !disabled;
+  const action = submitAction({ hasContent: promptContent.length > 0, disabled, canQueue });
+  const canSend = action === 'send';
+  const queueing = canQueue && disabled;
   const stopping = canStop === true && onStop !== undefined;
   const attachmentDisabled = inputLocked || !canAttachImages;
   // Panel visibility derives from the text (open only while typing the
@@ -126,8 +165,9 @@ export function Composer({ onSend, disabled, inputLocked, hint, canAttachImages,
   };
 
   const submit = () => {
-    if (!canSend) return;
-    onSend(promptContent);
+    if (action === 'none') return;
+    if (action === 'send') onSend(promptContent);
+    else useMessageQueue.getState().enqueue(sessionKey, promptContent);
     useComposerDrafts.getState().clearDraft(sessionKey);
   };
 
@@ -181,6 +221,49 @@ export function Composer({ onSend, disabled, inputLocked, hint, canAttachImages,
 
   return (
     <ContentColumn className="composer-column">
+        {queue.items.length > 0 && (
+          <div className="composer-queue" role="region" aria-label={t('composer.queueLabel')}>
+            <div className="composer-queue-head">
+              <span className="composer-queue-title">
+                {queue.paused
+                  ? t('composer.queuePaused', { count: String(queue.items.length) })
+                  : t('composer.queued', { count: String(queue.items.length) })}
+              </span>
+              {queue.paused && (
+                <IconButton
+                  variant="secondary"
+                  size="sm"
+                  icon={<Play size={14} />}
+                  label={t('composer.queueResume')}
+                  tooltip={t('composer.queueResume')}
+                  clickAction={() => useMessageQueue.getState().resume(sessionKey)}
+                />
+              )}
+            </div>
+            <ol className="composer-queue-list">
+              {queue.items.map((item) => {
+                const preview = queuedPreview(item, (count) =>
+                  t('composer.queuedImages', { count: String(count) }),
+                );
+                return (
+                  <li key={item.id} className="composer-queue-item">
+                    <span className="composer-queue-text" title={preview}>
+                      {preview}
+                    </span>
+                    <button
+                      type="button"
+                      className="composer-queue-remove"
+                      aria-label={t('composer.queueRemove', { preview })}
+                      onClick={() => useMessageQueue.getState().remove(sessionKey, item.id)}
+                    >
+                      <X size={12} />
+                    </button>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        )}
         <div
           className={`composer-card ${disabled ? 'composer-card--disabled' : ''}`}
         >
@@ -309,6 +392,18 @@ export function Composer({ onSend, disabled, inputLocked, hint, canAttachImages,
                 </div>
               )}
             </div>
+            <div className="composer-footer-trail">
+            {queueing && (
+              <IconButton
+                variant="secondary"
+                size="sm"
+                icon={<ListPlus size={16} />}
+                label={t('composer.queue')}
+                tooltip={t('composer.queueHint')}
+                isDisabled={action !== 'queue'}
+                clickAction={submit}
+              />
+            )}
             {stopping ? (
               <IconButton
                 variant="destructive"
@@ -317,7 +412,7 @@ export function Composer({ onSend, disabled, inputLocked, hint, canAttachImages,
                 label={t('composer.stop')}
                 clickAction={() => onStop?.()}
               />
-            ) : (
+            ) : queueing ? null : (
               <IconButton
                 variant="primary"
                 size="sm"
@@ -327,6 +422,7 @@ export function Composer({ onSend, disabled, inputLocked, hint, canAttachImages,
                 clickAction={submit}
               />
             )}
+            </div>
           </div>
         </div>
         {attachmentError ? (

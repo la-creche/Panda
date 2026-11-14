@@ -121,6 +121,10 @@ export type ForegroundLifecycle = {
    * healthy link the field stays writable for drafting the next message —
    * only sending is held back by composerDisabled (#216). */
   composerInputLocked: boolean;
+  /** A message may be queued now: a turn is running or awaiting approval on
+   * a healthy link with no switch in flight. The queue sends it when the
+   * turn ends (messageQueue.ts). */
+  canQueue: boolean;
   /** Stop is offered while a turn runs on a healthy live link. */
   canStop: boolean;
   /** The status line under the composer. */
@@ -202,13 +206,18 @@ export function foregroundLifecycle({
   const phase = connectionPhase(connection.status, connection.error, switching);
   const busy = docStatus !== 'idle' || switching;
   const composerDisabled = mode === 'live' ? !isLinkUp(phase) || !hasSession || busy : busy;
+  // Mid-turn the field stays writable (#216 drafting, now queueing too):
+  // whatever is written is held until the turn ends.
+  const canQueue =
+    docStatus !== 'idle' && !switching && (mode !== 'live' || (isLinkUp(phase) && hasSession));
   return {
     phase,
     error: connection.error,
     docStatus,
     busy,
     composerDisabled,
-    composerInputLocked: composerDisabled && !(docStatus === 'requires_action' && (mode !== 'live' || isLinkUp(phase))),
+    composerInputLocked: composerDisabled && !canQueue,
+    canQueue,
     canStop: mode === 'live' && isLinkUp(phase) && docStatus === 'running',
     hint: hintFor(mode, phase, connection.error, docStatus, hasSession),
   };

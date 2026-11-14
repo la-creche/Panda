@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 import { applyUpdate, emptySession } from './protocol/reducer';
 import { useComposerDrafts } from './composerDrafts';
+import { useMessageQueue } from './messageQueue';
 import type {
   AcpAuthMethod,
   AcpSessionUpdate,
@@ -695,6 +696,8 @@ export function connectionStorePort(connectionId: string): ConnectionStorePort {
       });
       // Its composer draft (possibly holding base64 image data) goes with it.
       useComposerDrafts.getState().clearSessionDrafts(sessionId);
+      // So does its message queue: nothing may send into a deleted session.
+      useMessageQueue.getState().clearSessionQueues(sessionId);
     },
     invalidateSelections: () => {
       // Observable by design (issue #19): this fires on close/disconnect and
