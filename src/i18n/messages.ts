@@ -94,6 +94,20 @@ export const messages = {
   'composer.settingsDisabled': { en: 'Cannot change settings right now', zh: '当前不可调整设置' },
   'composer.stop': { en: 'Stop', zh: '停止' },
   'composer.send': { en: 'Send', zh: '发送' },
+  'composer.queue': { en: 'Queue message', zh: '加入队列' },
+  'composer.queueHint': {
+    en: 'Queue message — it sends when the current turn ends (Enter)',
+    zh: '加入队列 — 当前回合结束后发送(Enter)',
+  },
+  'composer.queueLabel': { en: 'Queued messages', zh: '排队的消息' },
+  'composer.queued': { en: 'Queued · {count} — sends when the turn ends', zh: '排队中 · {count} — 回合结束后发送' },
+  'composer.queuePaused': {
+    en: 'Queue paused · {count} — the last turn stopped early',
+    zh: '队列已暂停 · {count} — 上一回合提前结束',
+  },
+  'composer.queueResume': { en: 'Resume queue', zh: '继续发送' },
+  'composer.queueRemove': { en: 'Remove queued message: {preview}', zh: '移除排队消息:{preview}' },
+  'composer.queuedImages': { en: '{count} image(s)', zh: '{count} 张图片' },
   'composer.readImageFailed': { en: 'Failed to read image: {message}', zh: '读取图片失败:{message}' },
   'composer.hintImages': {
     en: 'Enter to send, Shift+Enter for a new line · paste or pick images',

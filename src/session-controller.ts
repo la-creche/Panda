@@ -10,8 +10,9 @@ import type { AcpContentBlock, ElicitationResponse, PermissionOptionKind } from 
  * controller is a pick, not a prop.
  */
 export interface ForegroundSessionController {
-  /** Send one user turn's content blocks. */
-  send: (content: AcpContentBlock[]) => void;
+  /** Send one user turn's content blocks. The live driver resolves when the
+   * turn ends and rejects when the content is refused before it starts. */
+  send: (content: AcpContentBlock[]) => void | Promise<void>;
   /** Answer a pending permission request for a tool call. */
   resolvePermission: (toolCallId: string, kind: PermissionOptionKind) => void;
   /** Answer the pending elicitation. */

@@ -7,6 +7,7 @@ import { EmptyState } from './components/EmptyState';
 import { AuthGate } from './components/AuthGate';
 import { StatusBar } from './components/StatusBar';
 import { Composer } from './components/Composer';
+import { lastTurnStopped, useMessageQueueDrain } from './messageQueue';
 import { PlanDock } from './components/PlanDock';
 import {
   useActiveConnection,
@@ -89,6 +90,16 @@ function MainScreen() {
   const foregroundSessionKey = liveActive
     ? composerDraftKey(activeConnectionId ?? 'none', activeSessionId)
     : DEMO_DRAFT_KEY;
+
+  // Queued messages (messageQueue.ts) go out one per finished turn of the
+  // foreground session; a turn that stopped early pauses the queue.
+  useMessageQueueDrain({
+    sessionKey: foregroundSessionKey,
+    busy: lifecycle.docStatus !== 'idle',
+    canSendNow: !lifecycle.composerDisabled,
+    stopped: lastTurnStopped(doc),
+    send: controller.send,
+  });
 
   const activeSession = liveActive
     ? sessions.find((entry) => entry.sessionId === activeSessionId)
@@ -197,6 +208,7 @@ function MainScreen() {
               onSend={controller.send}
               disabled={lifecycle.composerDisabled}
               inputLocked={lifecycle.composerInputLocked}
+              canQueue={lifecycle.canQueue}
               hint={lifecycle.hint}
               // Undefined until the live link is up and capabilities are
               // negotiated (#214): no agent, no capability claims either way.

@@ -168,19 +168,30 @@ describe('foregroundLifecycle (live connection)', () => {
     expect(sessionless.hint).toBe('Connected — select an existing session or start a new one');
   });
 
-  it('keeps the field writable only while a permission awaits on a healthy link (#216)', () => {
-    // Awaiting approval: send held back, drafting allowed.
+  it('keeps the field writable mid-turn on a healthy link, so the next message can be queued (#216)', () => {
+    // Awaiting approval and running: send held back, writing and queueing allowed.
     const awaiting = foregroundLifecycle(foreground({ docStatus: 'requires_action' }));
     expect(awaiting.composerDisabled).toBe(true);
     expect(awaiting.composerInputLocked).toBe(false);
-    // Running / switching / broken link: field locked together with send.
-    expect(foregroundLifecycle(foreground({ docStatus: 'running' })).composerInputLocked).toBe(true);
-    expect(foregroundLifecycle(foreground({ switching: true })).composerInputLocked).toBe(true);
-    expect(
-      foregroundLifecycle(foreground({ docStatus: 'requires_action', connection: { status: 'disconnected', error: null } })).composerInputLocked,
-    ).toBe(true);
-    // Demo replays draft the same way while their permission waits.
+    expect(awaiting.canQueue).toBe(true);
+    const running = foregroundLifecycle(foreground({ docStatus: 'running' }));
+    expect(running.composerDisabled).toBe(true);
+    expect(running.composerInputLocked).toBe(false);
+    expect(running.canQueue).toBe(true);
+    // Idle: send directly, nothing to queue behind.
+    expect(foregroundLifecycle(foreground({})).canQueue).toBe(false);
+    // Switching / broken link: field locked together with send.
+    const switching = foregroundLifecycle(foreground({ docStatus: 'running', switching: true }));
+    expect(switching.composerInputLocked).toBe(true);
+    expect(switching.canQueue).toBe(false);
+    const down = foregroundLifecycle(
+      foreground({ docStatus: 'requires_action', connection: { status: 'disconnected', error: null } }),
+    );
+    expect(down.composerInputLocked).toBe(true);
+    expect(down.canQueue).toBe(false);
+    // Demo replays queue the same way while their turn runs.
     expect(foregroundLifecycle(foreground({ mode: 'demo', docStatus: 'requires_action' })).composerInputLocked).toBe(false);
+    expect(foregroundLifecycle(foreground({ mode: 'demo', docStatus: 'running' })).canQueue).toBe(true);
   });
 
   it('gates the composer on the link, the turn and in-flight switches', () => {

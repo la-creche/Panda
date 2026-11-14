@@ -4,6 +4,18 @@ All notable changes to Panda are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning will
 follow the releases published from this repository.
 
+## [Unreleased]
+
+### Added
+
+- **Queue messages mid-turn** — while a turn runs or waits for approval,
+  the composer stays writable: Enter (or the Queue button next to Stop)
+  holds the message in a per-session queue shown above the composer. Each
+  time a turn ends, Panda sends the head of the queue, one turn at a time.
+  A turn that ends with a stop reason other than `end_turn` (Stop, refusal,
+  limits) pauses the queue until Resume. Queued messages are not echoed
+  into the stream until they are sent, and live in memory only.
+
 ## [0.2.0] - 2026-09-09
 
 The positioning pivot to "a ready-made UI for agent developers" — README
